@@ -375,6 +375,7 @@ export function render({ model, el }) {
   // ----------------------------------------------------------------------------
 
   const onModelChange = () => {
+  console.log("vtp_data changed");
 
     updatePolyData(model.vtp_data);
 

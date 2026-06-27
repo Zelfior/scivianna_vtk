@@ -38,7 +38,7 @@ def set_color(polydata: vtk.vtkPolyData, cmap: str = "viridis"):
 
     # Add the new RGB array
     cell_data.AddArray(rgb_array)
-    
+
 def create_uniform_structured_grid(nx, ny, nz, spacing=1.0, cmap="viridis"):
     grid = vtk.vtkStructuredGrid()
     grid.SetDimensions(nx, ny, nz)
@@ -116,22 +116,8 @@ def structured_to_polydata(grid):
     return geom.GetOutput()
 
 class ExamplePanel(param.Parameterized):
-    resolution_theta = param.Integer(default=10, bounds=(4, 80))
-    resolution_phi = param.Integer(default=10, bounds=(4, 80))
-    cmap = param.Selector(default="viridis", objects=["viridis", "plasma", "inferno", "magma"])
-    geometry_type = param.Selector(default="sliced_sphere", objects=["sliced_sphere", "structured_grid"])
-
     def __init__(self, **params):
         super().__init__(**params)
-        self.param.watch(self._update_vtp_data, ["resolution_theta", "resolution_phi", "geometry_type"])
-        self.param.watch(self._update_color, ["cmap"])
-
-        self.poly = create_sliced_sphere(
-            theta_count=self.resolution_theta,
-            phi_count=self.resolution_phi,
-            cmap=self.cmap,
-        )
-
         self.theta_slider = pmui.IntSlider(
             name="Resolution Theta",
             start=4,
@@ -156,6 +142,18 @@ class ExamplePanel(param.Parameterized):
             options=["sliced_sphere", "structured_grid"],
             sizing_mode="stretch_width",
         )
+
+        self.theta_slider.param.watch(self._update_vtp_data, "value")
+        self.phi_slider.param.watch(self._update_vtp_data, "value")
+        self.cmap_select.param.watch(self._update_color, "value")
+        self.geom_select.param.watch(self._update_vtp_data, "value")
+
+        self.poly = create_sliced_sphere(
+            theta_count=self.theta_slider.value,
+            phi_count=self.phi_slider.value,
+            cmap=self.cmap_select.value,
+        )
+
         self.vtk_view = VTKPlotter(vtp_data = polydata_to_dict(self.poly), sizing_mode="stretch_both")
 
     def show(self):
@@ -172,28 +170,30 @@ class ExamplePanel(param.Parameterized):
         ).show()
 
     def _update_vtp_data(self, event=None):
+        print("Updating VTKPlotter data...")
         if self.geom_select.value == "structured_grid":
             grid = create_uniform_structured_grid(
-                nx=self.resolution_theta,
-                ny=self.resolution_phi,
-                nz=self.resolution_phi,
-                spacing=1.0 / self.resolution_theta,
-                cmap=self.cmap,
+                nx=self.theta_slider.value,
+                ny=self.phi_slider.value,
+                nz=self.phi_slider.value,
+                spacing=1.0 / self.theta_slider.value,
+                cmap=self.cmap_select.value,
             )
             poly = structured_to_polydata(grid)
         else:
             poly = create_sliced_sphere(
-                theta_count=self.resolution_theta,
-                phi_count=self.resolution_phi,
-                cmap=self.cmap,
+                theta_count=self.theta_slider.value,
+                phi_count=self.phi_slider.value,
+                cmap=self.cmap_select.value,
             )
 
         self.poly = poly
         self.vtk_view.update_polydata(poly)
 
     def _update_color(self, event=None):
-        set_color(self.poly, cmap=self.cmap)
-        self.vtk_view.update_polydata(self.poly)
+        print("Updating VTKPlotter colors...")
+        set_color(self.poly, cmap=self.cmap_select.value)
+        self.vtk_view.update_colors(self.poly)
 
 if __name__ == "__main__":
     ExamplePanel().show()

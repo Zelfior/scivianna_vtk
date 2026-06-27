@@ -130,7 +130,7 @@ def polydata_to_dict(poly):
         "verts": verts,
         "strips": strips,
 
-        # "pointData": point_data,
+        "pointData": point_data,
         "cellData": cell_data,
     }
 
@@ -145,18 +145,23 @@ class VTKPlotter(JSComponent):
         }
     }
 
-    _esm = "VTKPlotter.bundle.js"
+    _esm = "./src/app.js"
 
     def __init__(self, **params):
         super().__init__(**params)
 
     def update_polydata(self, polydata):
+        print("Updating polydata in VTKPlotter...")
         self.vtp_data = polydata_to_dict(polydata)
 
     def update_colors(self, polydata):
+        print("Updating colors in VTKPlotter...")
         # Update the VTKPlotter with new polydata
         new_data = polydata_to_dict(polydata)
 
-        # self.vtp_data["pointData"] = new_data["pointData"]
-        self.vtp_data["cellData"] = new_data["cellData"]
+        self.vtp_data = {
+            **self.vtp_data,
+            "pointData": new_data["pointData"],
+            "cellData": new_data["cellData"],
+        }
         

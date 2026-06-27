@@ -142,11 +142,17 @@ class ExamplePanel(param.Parameterized):
             options=["sliced_sphere", "structured_grid"],
             sizing_mode="stretch_width",
         )
+        self.display_info = pmui.Checkbox(
+            name="Display Info",
+            value=True,
+            sizing_mode="stretch_width",
+        )
 
         self.theta_slider.param.watch(self._update_vtp_data, "value")
         self.phi_slider.param.watch(self._update_vtp_data, "value")
         self.cmap_select.param.watch(self._update_color, "value")
         self.geom_select.param.watch(self._update_vtp_data, "value")
+        self.display_info.param.watch(self._update_info_display, "value")
 
         self.poly = create_sliced_sphere(
             theta_count=self.theta_slider.value,
@@ -154,7 +160,30 @@ class ExamplePanel(param.Parameterized):
             cmap=self.cmap_select.value,
         )
 
-        self.vtk_view = VTKPlotter(vtp_data = polydata_to_dict(self.poly), sizing_mode="stretch_both")
+        self.description = pmui.Typography(
+            """
+            Hover to update...
+            """
+        )
+
+        self.vtk_view = VTKPlotter(sizing_mode="stretch_both")
+        self.vtk_view.update_polydata(self.poly)
+
+        self.vtk_view.param.watch(self.update_description, "hover_cell_id")
+        self.vtk_view.param.watch(self.update_description, "hover_cell_value")
+        self.vtk_view.param.watch(self.update_description, "hover_position")
+
+    def update_description(self, event=None):
+        self.description.object = f"""
+        Hovered Cell ID: {self.vtk_view.hover_cell_id}
+        Hovered Cell Value: {self.vtk_view.hover_cell_value}
+
+        Hovered Coordinates:
+
+        - X : {self.vtk_view.hover_position[0]:.3f}
+        - Y : {self.vtk_view.hover_position[1]:.3f}
+        - Z : {self.vtk_view.hover_position[2]:.3f}
+        """
 
     def show(self):
         pmui.Row(
@@ -163,6 +192,8 @@ class ExamplePanel(param.Parameterized):
                 self.theta_slider,
                 self.phi_slider,
                 self.cmap_select,
+                self.display_info,
+                self.description,
                 width=300,
             ),
             self.vtk_view,
@@ -195,5 +226,8 @@ class ExamplePanel(param.Parameterized):
         set_color(self.poly, cmap=self.cmap_select.value)
         self.vtk_view.update_colors(self.poly)
 
+    def _update_info_display(self, event=None):
+        self.vtk_view.info = self.display_info.value
+    
 if __name__ == "__main__":
     ExamplePanel().show()

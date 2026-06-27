@@ -137,7 +137,15 @@ def polydata_to_dict(poly):
 
 class VTKPlotter(JSComponent):
 
-    vtp_data = param.Dict()
+    geometry = param.Dict()
+    colors = param.Dict()
+
+    info = param.Boolean(default=True, doc="Whether to show the info panel.")
+
+    hover_cell_id = param.Integer(default=-1)
+    hover_cell_value = param.Integer(default=-1)
+
+    hover_position = param.List(default=[float("nan"), float("nan"), float("nan")])
 
     _importmap = {
         "imports": {
@@ -151,17 +159,24 @@ class VTKPlotter(JSComponent):
         super().__init__(**params)
 
     def update_polydata(self, polydata):
-        print("Updating polydata in VTKPlotter...")
-        self.vtp_data = polydata_to_dict(polydata)
+        d = polydata_to_dict(polydata)
 
-    def update_colors(self, polydata):
-        print("Updating colors in VTKPlotter...")
-        # Update the VTKPlotter with new polydata
-        new_data = polydata_to_dict(polydata)
-
-        self.vtp_data = {
-            **self.vtp_data,
-            "pointData": new_data["pointData"],
-            "cellData": new_data["cellData"],
+        self.geometry = {
+            "points": d["points"],
+            "polys": d["polys"],
+            "lines": d["lines"],
+            "verts": d["verts"],
+            "strips": d["strips"],
         }
-        
+
+        self.colors = {
+            "pointData": d["pointData"],
+            "cellData": d["cellData"],
+        }
+    def update_colors(self, polydata):
+        d = polydata_to_dict(polydata)
+
+        self.colors = {
+            "pointData": d["pointData"],
+            "cellData": d["cellData"],
+        }

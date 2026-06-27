@@ -145,126 +145,131 @@ export function render({ model, el }) {
   // ----------------------------------------------------------------------------
   // Update PolyData
   // ----------------------------------------------------------------------------
-
-  function updatePolyData(data) {
-
+  function updateGeometry(data) {
     if (!data) return;
 
-    // --------------------------------------------------------------------------
-    // POINTS
-    // --------------------------------------------------------------------------
-
+    // Points
     const pts = toTyped(
       data.points?.buffer,
-      data.points?.dtype || 'float32'
+      data.points?.dtype || "float32"
     );
 
     if (pts) {
-
       const points = vtkPoints.newInstance();
-
       points.setData(pts, 3);
-
       polyData.setPoints(points);
     }
 
-    // --------------------------------------------------------------------------
-    // TOPOLOGY
-    // --------------------------------------------------------------------------
+    // Topology
+    polyData.setPolys(makeCellArray(data.polys));
+    polyData.setLines(makeCellArray(data.lines));
+    polyData.setVerts(makeCellArray(data.verts));
+    polyData.setStrips(makeCellArray(data.strips));
 
-    const polys = makeCellArray(data.polys);
-    const lines = makeCellArray(data.lines);
-    const verts = makeCellArray(data.verts);
-    const strips = makeCellArray(data.strips);
+    polyData.modified();
+  }
 
-    polyData.setPolys(polys || null);
-    polyData.setLines(lines || null);
-    polyData.setVerts(verts || null);
-    polyData.setStrips(strips || null);
+  function updateScalars(data) {
+    if (!data) return;
 
-    // --------------------------------------------------------------------------
-    // CLEAR OLD DATA
-    // --------------------------------------------------------------------------
+    // ------------------------------------------------------------------
+    // Point data
+    // ------------------------------------------------------------------
 
-    polyData.getPointData().initialize();
-    polyData.getCellData().initialize();
+    const pd = polyData.getPointData();
+    pd.initialize();
 
-    // --------------------------------------------------------------------------
-    // POINT DATA
-    // --------------------------------------------------------------------------
-
-    const pointData = data.pointData || {};
-
-    Object.entries(pointData).forEach(([name, entry], idx) => {
-
-      const arr = toTyped(
-        entry.buffer,
-        entry.dtype
-      );
-
-      if (!arr) return;
+    Object.entries(data.pointData || {}).forEach(([name, entry], idx) => {
 
       const vtkArr = vtkDataArray.newInstance({
         name,
-        values: arr,
-        numberOfComponents: entry.components || 1,
+        values: toTyped(entry.buffer, entry.dtype),
+        numberOfComponents: entry.components,
       });
 
-      polyData.getPointData().addArray(vtkArr);
+      pd.addArray(vtkArr);
 
       if (idx === 0) {
-        polyData.getPointData().setScalars(vtkArr);
+        pd.setScalars(vtkArr);
       }
     });
 
-    // --------------------------------------------------------------------------
-    // CELL DATA
-    // --------------------------------------------------------------------------
+    // ------------------------------------------------------------------
+    // Cell data
+    // ------------------------------------------------------------------
 
-    const cellData = data.cellData || {};
+    const cd = polyData.getCellData();
+    cd.initialize();
 
-    Object.entries(cellData).forEach(([name, entry]) => {
-
-      const arr = toTyped(
-        entry.buffer,
-        entry.dtype
-      );
-
-      if (!arr) return;
+    Object.entries(data.cellData || {}).forEach(([name, entry]) => {
 
       const vtkArr = vtkDataArray.newInstance({
         name,
-        values: arr,
-        numberOfComponents: entry.components || 1,
+        values: toTyped(entry.buffer, entry.dtype),
+        numberOfComponents: entry.components,
       });
 
-      polyData.getCellData().addArray(vtkArr);
+      cd.addArray(vtkArr);
     });
 
+    pd.modified();
+    cd.modified();
     polyData.modified();
+  }
 
+  function renderUpdate(resetCamera = false) {
     mapper.modified();
 
-    renderer.resetCameraClippingRange();
+    if (resetCamera) {
+      renderer.resetCamera();
+    } else {
+      renderer.resetCameraClippingRange();
+    }
 
     renderWindow.render();
   }
-
   // ----------------------------------------------------------------------------
   // Initial load
   // ----------------------------------------------------------------------------
-
-  updatePolyData(model.vtp_data);
-
-  renderer.resetCamera();
-
-  renderWindow.render();
+  updateGeometry(model.geometry);
+  updateScalars(model.colors);
+  renderUpdate(true);
 
   // ----------------------------------------------------------------------------
   // Hover picking
   // ----------------------------------------------------------------------------
   let hoverEnabled = !!model.info;
+  let lastHover = {
+    cellId: -2,
+    cellValue: null,
+    position: [NaN, NaN, NaN],
+  };
+  function updateHover(cellId, cellValue, world) {
 
+    const x = world?.[0] ?? NaN;
+    const y = world?.[1] ?? NaN;
+    const z = world?.[2] ?? NaN;
+
+    if (
+      lastHover.cellId === cellId &&
+      lastHover.cellValue === cellValue &&
+      lastHover.position[0] === x &&
+      lastHover.position[1] === y &&
+      lastHover.position[2] === z
+    ) {
+      return;
+    }
+
+    lastHover = {
+      cellId,
+      cellValue,
+      position: [x, y, z]
+    };
+
+    model.hover_cell_id = cellId;
+    model.hover_cell_value = cellValue ?? -1;
+    model.hover_position = [x, y, z];
+  }
   function onMouseMove(e) {
 
     if (!hoverEnabled) return;
@@ -294,6 +299,8 @@ export function render({ model, el }) {
     if (pickedCellId < 0) {
 
       tooltip.style.display = 'none';
+      updateHover(-1, -1, null);
+
 
       return;
     }
@@ -326,6 +333,12 @@ export function render({ model, el }) {
         ? rgbaArray.getTuple(pickedCellId)
         : null;
 
+    updateHover(
+      pickedCellId,
+      cellValue,
+      world
+    );
+
     // --------------------------------------------------------------------------
     // Tooltip
     // --------------------------------------------------------------------------
@@ -337,15 +350,14 @@ export function render({ model, el }) {
         <b>xyz</b>:
         ${world.map(v => v.toFixed(4)).join(', ')}
       </div>
-      ${
-        rgba
-          ? `
+      ${rgba
+        ? `
             <div>
               <b>rgba</b>:
               ${rgba.map(v => Math.round(v)).join(', ')}
             </div>
           `
-          : ''
+        : ''
       }
     `;
 
@@ -357,6 +369,7 @@ export function render({ model, el }) {
 
   function onMouseLeave() {
     tooltip.style.display = 'none';
+    updateHover(-1, -1, null);
   }
 
   function enableHover(enable) {
@@ -374,20 +387,24 @@ export function render({ model, el }) {
   // Watch model updates
   // ----------------------------------------------------------------------------
 
-  const onModelChange = () => {
-  console.log("vtp_data changed");
-
-    updatePolyData(model.vtp_data);
-
+  const onInfoChange = () => {
     const next = !!model.info;
 
     if (next !== hoverEnabled) {
       enableHover(next);
     }
   };
+  model.on("change:geometry", () => {
+    updateGeometry(model.geometry);
+    renderUpdate(true);
+  });
 
-  model.on?.('change:vtp_data', onModelChange);
-  model.on?.('change:info', onModelChange);
+  model.on("change:colors", () => {
+    updateScalars(model.colors);
+    renderUpdate(false);
+  });
+
+  model.on?.('change:info', onInfoChange);
 
   // ----------------------------------------------------------------------------
   // Resize handling
@@ -414,8 +431,9 @@ export function render({ model, el }) {
 
     el.removeEventListener('mouseleave', onMouseLeave);
 
-    model.off?.('change:vtp_data', onModelChange);
-    model.off?.('change:info', onModelChange);
+    model.off?.('change:geometry', updateGeometry);
+    model.off?.('change:colors', updateScalars);
+    model.off?.('change:info', onInfoChange);
 
     tooltip.remove();
 

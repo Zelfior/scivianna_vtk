@@ -70,3 +70,80 @@ def test_example_panel_display_info():
     
     panel.display_info.value = True
     assert panel.vtk_view.info is True
+
+
+def test_example_panel_clip_plane():
+    """Test ExamplePanel clip plane functionality."""
+    panel = ExamplePanel()
+    
+    # Test clip plane state retrieval
+    state = panel.vtk_view.clip_plane_state
+    assert 'enabled' in state
+    assert 'origin' in state
+    assert 'normal' in state
+    
+    # Test enable/disable
+    panel.clip_enabled.value = True
+    assert panel.vtk_view.clip_enabled is True
+    
+    panel.clip_enabled.value = False
+    assert panel.vtk_view.clip_enabled is False
+    
+    # Test axis change
+    panel.clip_axis_select.value = "x"
+    assert panel.vtk_view.clip_normal == [1, 0, 0]
+    
+    panel.clip_axis_select.value = "y"
+    assert panel.vtk_view.clip_normal == [0, 1, 0]
+    
+    # Test position slider
+    initial_pos = panel.clip_position_slider.value
+    panel.clip_position_slider.value = 0.8
+    assert panel.clip_position_slider.value == 0.8
+    
+    # Test clip_plane_state property values
+    state = panel.vtk_view.clip_plane_state
+    assert isinstance(state['origin'], list)
+    assert len(state['origin']) == 3
+    assert isinstance(state['normal'], list)
+    assert len(state['normal']) == 3
+
+
+def test_example_panel_clip_plane_methods():
+    """Test VTKPlotter clip plane control methods."""
+    panel = ExamplePanel()
+    
+    # Test set_clip_enabled
+    panel.vtk_view.set_clip_enabled(True)
+    assert panel.vtk_view.clip_enabled is True
+    
+    # Test set_clip_axis
+    panel.vtk_view.set_clip_axis('x')
+    assert panel.vtk_view.clip_normal == [1, 0, 0]
+    
+    panel.vtk_view.set_clip_axis('z', sign=-1)
+    assert panel.vtk_view.clip_normal == [0, 0, -1]
+    
+    # Test set_clip_plane with origin
+    new_origin = [0.5, 0.5, 0.5]
+    panel.vtk_view.set_clip_plane(origin=new_origin)
+    assert panel.vtk_view.clip_origin == new_origin
+    
+    # Test set_clip_plane with normal
+    new_normal = [1, 0, 0]
+    panel.vtk_view.set_clip_plane(normal=new_normal)
+    assert panel.vtk_view.clip_normal == new_normal
+    
+    # Test move_clip_plane
+    initial_origin = panel.vtk_view.clip_origin.copy()
+    panel.vtk_view.move_clip_plane(0.5)
+    # Origin should have moved along the normal
+    assert panel.vtk_view.clip_origin != initial_origin
+    
+    # Test clip_center and clip_axes properties
+    center = panel.vtk_view.clip_center
+    axes = panel.vtk_view.clip_axes
+    assert isinstance(center, list)
+    assert len(center) == 3
+    assert isinstance(axes, list)
+    assert len(axes) == 3

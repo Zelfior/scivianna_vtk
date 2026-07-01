@@ -67,6 +67,32 @@ The conversion produces:
 - **numpy** >= 1.20.0 - Array operations
 - **param** >= 2.0.0 - Parameter handling
 
+## Clip Plane Utility
+
+The JavaScript viewer includes a clip plane utility for viewing interior geometry. Access it via `window.vtkPanelClipPlane`:
+
+```javascript
+// Enable/disable clipping
+window.vtkPanelClipPlane.setEnabled(true);
+
+// Move plane along its normal (positive = forward, negative = backward)
+window.vtkPanelClipPlane.move(0.5);
+
+// Set plane orientation to cardinal axis
+window.vtkPanelClipPlane.setAxis('x', 1);  // Normal points in +X direction
+window.vtkPanelClipPlane.setAxis('y', -1); // Normal points in -Y direction
+window.vtkPanelClipPlane.setAxis('z', 1);  // Normal points in +Z direction
+
+// Update plane position and orientation directly
+window.vtkPanelClipPlane.update([0, 0, 0], [0, 0, 1]); // origin, normal
+
+// Get current state
+const state = window.vtkPanelClipPlane.getState();
+console.log(state); // { enabled: true, origin: [x,y,z], normal: [nx,ny,nz] }
+```
+
+The clip plane is automatically positioned at the geometry center on initial load.
+
 ## Common Issues & Solutions
 
 ### No geometry displayed

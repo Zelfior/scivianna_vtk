@@ -253,12 +253,36 @@ class ExamplePanel(param.Parameterized):
             value=True,
             sizing_mode="stretch_width",
         )
+        
+        # Clip plane controls
+        self.clip_enabled = pmui.Checkbox(
+            label="Enable Clip Plane (C to toggle)",
+            value=False,
+            sizing_mode="stretch_width",
+        )
+        self.clip_axis_select = pmui.Select(
+            label="Clip Axis (X/Y/Z keys)",
+            options=["x", "y", "z"],
+            value="z",
+            sizing_mode="stretch_width",
+        )
+        self.clip_position_slider = pmui.FloatSlider(
+            label="Clip Position",
+            start=-1.0,
+            end=1.0,
+            step=0.01,
+            value=0.5,
+            sizing_mode="stretch_width",
+        )
 
         self.theta_slider.param.watch(self._update_vtp_data, "value")
         self.phi_slider.param.watch(self._update_vtp_data, "value")
         self.cmap_select.param.watch(self._update_color, "value")
         self.geom_select.param.watch(self._update_vtp_data, "value")
         self.display_info.param.watch(self._update_info_display, "value")
+        self.clip_enabled.param.watch(self._update_clip_enabled, "value")
+        self.clip_axis_select.param.watch(self._update_clip_axis, "value")
+        self.clip_position_slider.param.watch(self._update_clip_position, "value")
 
         self.poly = create_sliced_sphere(
             theta_count=self.theta_slider.value,
@@ -278,6 +302,15 @@ class ExamplePanel(param.Parameterized):
         self.vtk_view.param.watch(self.update_description, "hover_cell_id")
         self.vtk_view.param.watch(self.update_description, "hover_cell_value")
         self.vtk_view.param.watch(self.update_description, "hover_position")
+        
+        # Initialize clip plane from model after first geometry update
+        self._init_clip_plane()
+
+    def _init_clip_plane(self):
+        """Initialize clip plane controls after geometry is loaded."""
+        # Set initial position based on geometry bounds
+        self.clip_position_slider.value = 0.5
+        self._update_clip_position()
 
     def update_description(self, event=None):
         self.description.object = f"""
@@ -298,6 +331,11 @@ class ExamplePanel(param.Parameterized):
                 self.theta_slider,
                 self.phi_slider,
                 self.cmap_select,
+
+                self.clip_enabled,
+                self.clip_axis_select,
+                self.clip_position_slider,
+
                 self.display_info,
                 self.description,
                 width=300,
@@ -339,6 +377,42 @@ class ExamplePanel(param.Parameterized):
 
     def _update_info_display(self, event=None):
         self.vtk_view.info = self.display_info.value
+
+    def _update_clip_enabled(self, event=None):
+        """Enable/disable clip plane."""
+        self.vtk_view.set_clip_enabled(self.clip_enabled.value)
+        
+    def _update_clip_axis(self, event=None):
+        """Set clip plane axis."""
+        self.vtk_view.set_clip_axis(self.clip_axis_select.value)
+        # Sync the origin to center after axis change
+        self._update_clip_position()
+        
+    def _update_clip_position(self, event=None):
+        """Update clip plane position."""
+        # Get geometry bounds to calculate proper origin
+        if hasattr(self, 'poly') and self.poly is not None:
+            bounds = self.poly.bounds
+            axis_idx = {'x': 0, 'y': 1, 'z': 2}.get(self.clip_axis_select.value, 2)
+            
+            # Calculate origin based on slider position along the selected axis
+            min_val = bounds[axis_idx * 2]
+            max_val = bounds[axis_idx * 2 + 1]
+            range_val = max_val - min_val
+            
+            # Position along the axis
+            pos = min_val + range_val * self.clip_position_slider.value
+            
+            # Create origin at this position on the selected axis
+            origin = [0.0, 0.0, 0.0]
+            origin[axis_idx] = pos
+            
+            # Set other coordinates to center of their ranges
+            for i in range(3):
+                if i != axis_idx:
+                    origin[i] = (bounds[i * 2] + bounds[i * 2 + 1]) / 2
+            
+            self.vtk_view.set_clip_plane(origin=origin)
     
 if __name__ == "__main__":
     ExamplePanel().show()

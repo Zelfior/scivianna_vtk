@@ -207,6 +207,11 @@ class VTKPlotter(JSComponent):
 
     hover_position = param.List(default=[float("nan"), float("nan"), float("nan")])
 
+    # Clip plane parameters
+    clip_enabled = param.Boolean(default=False, doc="Enable/disable clip plane visualization")
+    clip_origin = param.List(default=[0.0, 0.0, 0.0], doc="Clip plane origin [x, y, z]")
+    clip_normal = param.List(default=[0.0, 0.0, 1.0], doc="Clip plane normal [x, y, z]")
+
     _importmap = {
         "imports": {
             "@kitware/vtk.js": "https://esm.sh/@kitware/vtk.js@35.15.1",
@@ -217,6 +222,93 @@ class VTKPlotter(JSComponent):
 
     def __init__(self, **params):
         super().__init__(**params)
+
+    # -------------------------------------------------------------------------
+    # Clip Plane Control Methods
+    # -------------------------------------------------------------------------
+
+    def set_clip_enabled(self, enabled: bool):
+        """Enable or disable clip plane visualization."""
+        self.clip_enabled = enabled
+
+    def set_clip_plane(self, origin=None, normal=None):
+        """
+        Set clip plane position and orientation.
+
+        Parameters
+        ----------
+        origin : list of 3 floats, optional
+            Plane origin [x, y, z]. If None, keeps current origin.
+        normal : list of 3 floats, optional
+            Plane normal [x, y, z]. If None, keeps current normal.
+        """
+        if origin is not None:
+            self.clip_origin = list(origin)
+        if normal is not None:
+            self.clip_normal = list(normal)
+
+    def move_clip_plane(self, offset: float):
+        """
+        Move clip plane along its normal direction.
+
+        Parameters
+        ----------
+        offset : float
+            Distance to move the plane (positive moves in normal direction).
+        """
+        import numpy as np
+        origin = np.array(self.clip_origin)
+        normal = np.array(self.clip_normal)
+        new_origin = origin + normal * offset
+        self.clip_origin = new_origin.tolist()
+
+    def set_clip_axis(self, axis: str, sign: int = 1):
+        """
+        Set clip plane normal to a cardinal direction.
+
+        Parameters
+        ----------
+        axis : {'x', 'y', 'z'}
+            Axis for the normal direction.
+        sign : {1, -1}
+            Direction sign.
+        """
+        normals = {
+            'x': [sign, 0, 0],
+            'y': [0, sign, 0],
+            'z': [0, 0, sign],
+        }
+        self.clip_normal = normals.get(axis, [0, 0, sign])
+
+    def auto_clip_plane(self):
+        """Auto-position clip plane at geometry center (called automatically on load)."""
+        pass  # Auto-positioning is done in JavaScript on initial load
+
+    @property
+    def clip_plane_state(self) -> dict:
+        """
+        Get current clip plane state.
+
+        Returns
+        -------
+        dict
+            Dictionary with 'enabled', 'origin', and 'normal' keys.
+        """
+        return {
+            'enabled': self.clip_enabled,
+            'origin': self.clip_origin,
+            'normal': self.clip_normal,
+        }
+
+    @property
+    def clip_center(self) -> list:
+        """Get clip plane center (origin)."""
+        return self.clip_origin
+
+    @property
+    def clip_axes(self) -> list:
+        """Get clip plane normal vector."""
+        return self.clip_normal
 
     def _convert_mesh(self, mesh):
         """

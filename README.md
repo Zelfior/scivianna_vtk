@@ -2,7 +2,7 @@
 
 Interactive 3D mesh visualization in the browser using Panel and vtk.js.
 
-[![vtk_panel demo](image/image.png)]
+![vtk_panel demo](image/image.png)
 
 ## Features
 

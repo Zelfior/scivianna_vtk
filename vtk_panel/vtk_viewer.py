@@ -222,13 +222,13 @@ class VTKPlotter(JSComponent):
 
     vtp_data = param.Dict()
 
-    _importmap = {
-        "imports": {
-            "@kitware/vtk.js": "https://esm.sh/@kitware/vtk.js@35.15.1",
-        }
-    }
+    # _importmap = {
+    #     "imports": {
+    #         "@kitware/vtk.js": "https://esm.sh/@kitware/vtk.js@35.15.1",
+    #     }
+    # }
 
-    _esm = "./src/app.js"
+    _esm = "./VTKPlotter.bundle.js"
 
     def __init__(self, poly_data, **params):
 

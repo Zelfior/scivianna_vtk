@@ -22,7 +22,6 @@ export function render({ model, el }) {
   // ----------------------------------------------------------------------------
 
   const genericRenderWindow = vtkGenericRenderWindow.newInstance();
-
   genericRenderWindow.setContainer(el);
 
   el.style.width = '100%';
@@ -37,16 +36,11 @@ export function render({ model, el }) {
 
   renderer.setBackground(1, 1, 1);
 
-  // renderer.setUseDepthPeeling(true);
-  // renderer.setMaximumNumberOfPeels(100);
-  // renderer.setOcclusionRatio(0.1);
-
   // ----------------------------------------------------------------------------
   // Tooltip
   // ----------------------------------------------------------------------------
 
   const tooltip = document.createElement('div');
-
   tooltip.style.position = 'absolute';
   tooltip.style.pointerEvents = 'none';
   tooltip.style.background = 'rgba(0,0,0,0.8)';
@@ -58,22 +52,55 @@ export function render({ model, el }) {
   tooltip.style.whiteSpace = 'nowrap';
   tooltip.style.display = 'none';
   tooltip.style.zIndex = '100';
-
   el.appendChild(tooltip);
+
+  // ----------------------------------------------------------------------------
+  // Clip Plane and Widget
+  // ----------------------------------------------------------------------------
+
+  // Create a clip plane filter
+  const plane = vtkPlane.newInstance();
+  const clipPlane = vtkClipPolyData.newInstance();
+  clipPlane.setClipFunction(plane);
+
+  // Create the implicit plane widget for interaction
+  const widget = vtkImplicitPlaneWidget.newInstance();
+  widget.setPlaceFactor(1.25);
+  plane.setNormal([0, 0, 1]);
+  plane.setOrigin([0, 0, 0]);
+
+  // Widget manager to handle the widget
+  const widgetManager = vtkWidgetManager.newInstance();
+  widgetManager.setRenderer(renderer);
+  const widgetInstance = widgetManager.addWidget(widget, {
+    placeFactor: 1.25,
+  });
+
+  // Initialize widget with the geometry bounds after data is loaded
+  function initializeWidget() {
+    const bounds = polyData.getBounds();
+    // Check if bounds are valid (non-zero size)
+    const size = [
+      bounds[1] - bounds[0],
+      bounds[3] - bounds[2],
+      bounds[5] - bounds[4],
+    ];
+    if (size[0] > 0 || size[1] > 0 || size[2] > 0) {
+      widget.placeWidget(bounds);
+      widgetInstance.setEnabled(true);
+      widgetInstance.setManipulatorEnabled(true);
+    }
+  }
 
   // ----------------------------------------------------------------------------
   // Helpers
   // ----------------------------------------------------------------------------
 
   function toTyped(buffer, dtype) {
-
     if (!buffer) return null;
-
     switch (dtype) {
-
       case 'uint8':
         return new Uint8Array(buffer);
-
       case 'float32':
       default:
         return new Float32Array(buffer);
@@ -81,15 +108,10 @@ export function render({ model, el }) {
   }
 
   function makeCellArray(cell) {
-
     if (!cell || !cell.buffer) return null;
-
     const values = new Uint32Array(cell.buffer);
-
     const vtkArr = vtkCellArray.newInstance();
-
     vtkArr.setData(values);
-
     return vtkArr;
   }
 
@@ -107,34 +129,34 @@ export function render({ model, el }) {
   mapper.setInputData(polyData);
 
   mapper.setScalarVisibility(true);
-
   mapper.setScalarModeToUseCellFieldData();
-
   mapper.setColorModeToDirectScalars();
-
   mapper.setColorByArrayName('rgb');
 
   const actor = vtkActor.newInstance();
-
   actor.setMapper(mapper);
 
-  // actor.setForceTranslucent(true);
-
   const prop = actor.getProperty();
-
   prop.setRepresentationToSurface();
-
   prop.setEdgeVisibility(true);
-
   prop.setEdgeColor(0, 0, 0);
-
   prop.setAmbient(0.2);
   prop.setDiffuse(0.8);
   prop.setSpecular(0.1);
-
   prop.setOpacity(1.0);
 
   renderer.addActor(actor);
+
+  // Update the clip plane when the widget is interacted with
+  widgetInstance.onInteractionEvent(() => {
+    const state = widgetInstance.getWidgetState();
+    plane.setNormal(state.getNormal());
+    plane.setOrigin(state.getOrigin());
+
+    plane.modified();
+    clipPlane.modified();
+    renderWindow.render();
+  });
 
   // ----------------------------------------------------------------------------
   // Clip Plane Setup - ParaView style clipping
@@ -188,11 +210,8 @@ export function render({ model, el }) {
   // ----------------------------------------------------------------------------
 
   const picker = vtkCellPicker.newInstance();
-
   picker.setPickFromList(true);
-
   picker.initializePickList();
-
   picker.addPickList(actor);
 
   // ----------------------------------------------------------------------------
@@ -202,11 +221,7 @@ export function render({ model, el }) {
     if (!data) return;
 
     // Points
-    const pts = toTyped(
-      data.points?.buffer,
-      data.points?.dtype || "float32"
-    );
-
+    const pts = toTyped(data.points?.buffer, data.points?.dtype || "float32");
     if (pts) {
       const points = vtkPoints.newInstance();
       points.setData(pts, 3);
@@ -220,54 +235,43 @@ export function render({ model, el }) {
     polyData.setStrips(makeCellArray(data.strips));
 
     polyData.modified();
+    clipPlane.modified();
   }
 
   function updateScalars(data) {
     if (!data) return;
 
-    // ------------------------------------------------------------------
     // Point data
-    // ------------------------------------------------------------------
-
     const pd = polyData.getPointData();
     pd.initialize();
 
     Object.entries(data.pointData || {}).forEach(([name, entry], idx) => {
-
       const vtkArr = vtkDataArray.newInstance({
         name,
         values: toTyped(entry.buffer, entry.dtype),
         numberOfComponents: entry.components,
       });
-
       pd.addArray(vtkArr);
-
-      if (idx === 0) {
-        pd.setScalars(vtkArr);
-      }
+      if (idx === 0) pd.setScalars(vtkArr);
     });
 
-    // ------------------------------------------------------------------
     // Cell data
-    // ------------------------------------------------------------------
-
     const cd = polyData.getCellData();
     cd.initialize();
 
     Object.entries(data.cellData || {}).forEach(([name, entry]) => {
-
       const vtkArr = vtkDataArray.newInstance({
         name,
         values: toTyped(entry.buffer, entry.dtype),
         numberOfComponents: entry.components,
       });
-
       cd.addArray(vtkArr);
     });
 
     pd.modified();
     cd.modified();
     polyData.modified();
+    clipPlane.modified();
   }
 
   // ----------------------------------------------------------------------------
@@ -363,15 +367,14 @@ export function render({ model, el }) {
 
   function renderUpdate(resetCamera = false) {
     mapper.modified();
-
     if (resetCamera) {
       renderer.resetCamera();
     } else {
       renderer.resetCameraClippingRange();
     }
-
     renderWindow.render();
   }
+
   // ----------------------------------------------------------------------------
   // Initial load
   // ----------------------------------------------------------------------------
@@ -379,17 +382,16 @@ export function render({ model, el }) {
   updateScalars(model.colors);
   renderUpdate(true);
 
+  // Initialize the widget with current geometry (after data is loaded)
+  initializeWidget();
+
   // ----------------------------------------------------------------------------
   // Hover picking
   // ----------------------------------------------------------------------------
   let hoverEnabled = !!model.info;
-  let lastHover = {
-    cellId: -2,
-    cellValue: null,
-    position: [NaN, NaN, NaN],
-  };
-  function updateHover(cellId, cellValue, world) {
+  let lastHover = { cellId: -2, cellValue: null, position: [NaN, NaN, NaN] };
 
+  function updateHover(cellId, cellValue, world) {
     const x = world?.[0] ?? NaN;
     const y = world?.[1] ?? NaN;
     const z = world?.[2] ?? NaN;
@@ -404,110 +406,47 @@ export function render({ model, el }) {
       return;
     }
 
-    lastHover = {
-      cellId,
-      cellValue,
-      position: [x, y, z]
-    };
-
+    lastHover = { cellId, cellValue, position: [x, y, z] };
     model.hover_cell_id = cellId;
     model.hover_cell_value = cellValue ?? -1;
     model.hover_position = [x, y, z];
   }
+
   function onMouseMove(e) {
-
     if (!hoverEnabled) return;
-
     const rect = el.getBoundingClientRect();
-
-    // --------------------------------------------------------------------------
-    // DOM coordinates
-    // --------------------------------------------------------------------------
-
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
-
-    // --------------------------------------------------------------------------
-    // vtk/OpenGL coordinates
-    // --------------------------------------------------------------------------
-
     const vtkY = rect.height - y;
 
-    picker.pick(
-      [x, vtkY, 0],
-      renderer
-    );
-
+    picker.pick([x, vtkY, 0], renderer);
     const pickedCellId = picker.getCellId();
 
     if (pickedCellId < 0) {
-
       tooltip.style.display = 'none';
       updateHover(-1, -1, null);
-
-
       return;
     }
 
-    // --------------------------------------------------------------------------
-    // World coordinates
-    // --------------------------------------------------------------------------
-
     const world = picker.getPickPosition();
-
-    // --------------------------------------------------------------------------
-    // Cell data
-    // --------------------------------------------------------------------------
-
     const cellData = polyData.getCellData();
+    const cellIdArray = cellData.getArrayByName('cell_id');
+    const rgbaArray = cellData.getArrayByName('rgba');
 
-    const cellIdArray =
-      cellData.getArrayByName('cell_id');
+    const cellValue = cellIdArray ? cellIdArray.getValue(pickedCellId) : 'N/A';
+    const rgba = rgbaArray ? rgbaArray.getTuple(pickedCellId) : null;
 
-    const rgbaArray =
-      cellData.getArrayByName('rgba');
-
-    const cellValue =
-      cellIdArray
-        ? cellIdArray.getValue(pickedCellId)
-        : 'N/A';
-
-    const rgba =
-      rgbaArray
-        ? rgbaArray.getTuple(pickedCellId)
-        : null;
-
-    updateHover(
-      pickedCellId,
-      cellValue,
-      world
-    );
-
-    // --------------------------------------------------------------------------
-    // Tooltip
-    // --------------------------------------------------------------------------
+    updateHover(pickedCellId, cellValue, world);
 
     tooltip.innerHTML = `
       <div><b>cell_id</b>: ${pickedCellId}</div>
       <div><b>cell_value</b>: ${cellValue}</div>
-      <div>
-        <b>xyz</b>:
-        ${world.map(v => v.toFixed(4)).join(', ')}
-      </div>
-      ${rgba
-        ? `
-            <div>
-              <b>rgba</b>:
-              ${rgba.map(v => Math.round(v)).join(', ')}
-            </div>
-          `
-        : ''
-      }
+      <div><b>xyz</b>: ${world.map(v => v.toFixed(4)).join(', ')}</div>
+      ${rgba ? `<div><b>rgba</b>: ${rgba.map(v => Math.round(v)).join(', ')}</div>` : ''}
     `;
 
     tooltip.style.left = `${x + 12}px`;
     tooltip.style.top = `${y + 12}px`;
-
     tooltip.style.display = 'block';
   }
 
@@ -517,14 +456,11 @@ export function render({ model, el }) {
   }
 
   function enableHover(enable) {
-
     hoverEnabled = enable;
-
     tooltip.style.display = 'none';
   }
 
   el.addEventListener('mousemove', onMouseMove);
-
   el.addEventListener('mouseleave', onMouseLeave);
 
   // Expose clip plane utilities globally for this instance
@@ -625,13 +561,9 @@ export function render({ model, el }) {
   // ----------------------------------------------------------------------------
   // Watch model updates
   // ----------------------------------------------------------------------------
-
   const onInfoChange = () => {
     const next = !!model.info;
-
-    if (next !== hoverEnabled) {
-      enableHover(next);
-    }
+    if (next !== hoverEnabled) enableHover(next);
   };
 
   // Listen for clip plane changes from Python
@@ -653,6 +585,8 @@ export function render({ model, el }) {
     autoClipPlane();
     syncClipStateToModel();
     renderUpdate(true);
+    // Re-initialize widget bounds when geometry changes
+    initializeWidget();
   });
 
   model.on("change:colors", () => {
@@ -665,34 +599,24 @@ export function render({ model, el }) {
   // ----------------------------------------------------------------------------
   // Resize handling
   // ----------------------------------------------------------------------------
-
   const resizeObserver = new ResizeObserver(() => {
-
     genericRenderWindow.resize();
-
     renderWindow.render();
   });
-
   resizeObserver.observe(el);
 
   // ----------------------------------------------------------------------------
   // Cleanup
   // ----------------------------------------------------------------------------
-
   return () => {
-
     resizeObserver.disconnect();
-
     el.removeEventListener('mousemove', onMouseMove);
-
     el.removeEventListener('mouseleave', onMouseLeave);
-
     model.off?.('change:geometry', updateGeometry);
     model.off?.('change:colors', updateScalars);
     model.off?.('change:info', onInfoChange);
-
     tooltip.remove();
-
+    widgetManager.delete();
     genericRenderWindow.delete();
   };
 }

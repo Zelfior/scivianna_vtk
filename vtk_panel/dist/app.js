@@ -14,6 +14,8 @@ import vtkCellPicker from '@kitware/vtk.js/Rendering/Core/CellPicker';
 
 import vtkPlane from '@kitware/vtk.js/Common/DataModel/Plane';
 import vtkClipPolyData from '@kitware/vtk.js/Filters/Core/ClipPolyData';
+import vtkImplicitPlaneWidget from '@kitware/vtk.js/Widgets/Widgets3D/ImplicitPlaneWidget';
+import vtkWidgetManager from '@kitware/vtk.js/Widgets/Core/WidgetManager';
 
 export function render({ model, el }) {
 
@@ -56,25 +58,27 @@ export function render({ model, el }) {
 
   // ----------------------------------------------------------------------------
   // Clip Plane and Widget
+  //
+  // ONE implicit vtkPlane drives ONE vtkClipPolyData filter. Previously there
+  // was a second, unused "clipPlane" object that was actually a vtkClipPolyData
+  // instance being mistakenly treated as the plane (setOrigin/setNormal calls
+  // on a filter, and used as the clip *function* of the real clipper). That's
+  // why clipping never worked.
   // ----------------------------------------------------------------------------
 
-  // Create a clip plane filter
   const plane = vtkPlane.newInstance();
-  const clipPlane = vtkClipPolyData.newInstance();
-  clipPlane.setClipFunction(plane);
+  plane.setNormal(0, 0, 1);
+  plane.setOrigin(0, 0, 0);
 
   // Create the implicit plane widget for interaction
   const widget = vtkImplicitPlaneWidget.newInstance();
   widget.setPlaceFactor(1.25);
-  plane.setNormal([0, 0, 1]);
-  plane.setOrigin([0, 0, 0]);
 
   // Widget manager to handle the widget
   const widgetManager = vtkWidgetManager.newInstance();
   widgetManager.setRenderer(renderer);
-  const widgetInstance = widgetManager.addWidget(widget, {
-    placeFactor: 1.25,
-  });
+  const widgetInstance = widgetManager.addWidget(widget);
+  widgetManager.enablePicking();
 
   // Initialize widget with the geometry bounds after data is loaded
   function initializeWidget() {
@@ -87,8 +91,6 @@ export function render({ model, el }) {
     ];
     if (size[0] > 0 || size[1] > 0 || size[2] > 0) {
       widget.placeWidget(bounds);
-      widgetInstance.setEnabled(true);
-      widgetInstance.setManipulatorEnabled(true);
     }
   }
 
@@ -122,7 +124,7 @@ export function render({ model, el }) {
   const polyData = vtkPolyData.newInstance();
 
   // ----------------------------------------------------------------------------
-  // Main Actor Setup (original geometry)
+  // Main Actor Setup (original, unclipped geometry)
   // ----------------------------------------------------------------------------
 
   const mapper = vtkMapper.newInstance();
@@ -147,29 +149,14 @@ export function render({ model, el }) {
 
   renderer.addActor(actor);
 
-  // Update the clip plane when the widget is interacted with
-  widgetInstance.onInteractionEvent(() => {
-    const state = widgetInstance.getWidgetState();
-    plane.setNormal(state.getNormal());
-    plane.setOrigin(state.getOrigin());
-
-    plane.modified();
-    clipPlane.modified();
-    renderWindow.render();
-  });
-
   // ----------------------------------------------------------------------------
-  // Clip Plane Setup - ParaView style clipping
+  // Clipped Actor Setup
   // ----------------------------------------------------------------------------
-
-  const clipPlane = vtkPlane.newInstance();
-  clipPlane.setOrigin(0, 0, 0);
-  clipPlane.setNormal(0, 0, 1);
 
   // vtkClipPolyData removes geometry on one side of the plane
   // and shows the intersection cap
   const clipper = vtkClipPolyData.newInstance();
-  clipper.setClipFunction(clipPlane);
+  clipper.setClipFunction(plane);
   clipper.setInputData(polyData);
 
   const clipMapper = vtkMapper.newInstance();
@@ -192,14 +179,31 @@ export function render({ model, el }) {
 
   renderer.addActor(clipActor);
 
+  // Update the clip plane when the widget is interacted with
+  widgetInstance.onInteractionEvent(() => {
+    const state = widgetInstance.getWidgetState();
+    const normal = state.getNormal();
+    const origin = state.getOrigin();
+    plane.setNormal(normal[0], normal[1], normal[2]);
+    plane.setOrigin(origin[0], origin[1], origin[2]);
+
+    plane.modified();
+    clipper.modified();
+    renderWindow.render();
+
+    syncClipStateToModel();
+  });
+
   // Clip plane control state
   let clipEnabled = model.clip_enabled || false;
   let clipNormal = model.clip_normal || [0, 0, 1]; // Current normal direction
   let clipOrigin = model.clip_origin || [0, 0, 0]; // Current origin position
 
   // Initialize from model
-  clipPlane.setOrigin(clipOrigin[0], clipOrigin[1], clipOrigin[2]);
-  clipPlane.setNormal(clipNormal[0], clipNormal[1], clipNormal[2]);
+  clipOrigin = clipOrigin;
+  clipNormal = clipNormal;
+  plane.setOrigin(clipOrigin[0], clipOrigin[1], clipOrigin[2]);
+  plane.setNormal(clipNormal[0], clipNormal[1], clipNormal[2]);
 
   // Set initial visibility - clipActor visible when enabled, original actor hidden
   clipActor.setVisibility(clipEnabled);
@@ -213,6 +217,7 @@ export function render({ model, el }) {
   picker.setPickFromList(true);
   picker.initializePickList();
   picker.addPickList(actor);
+  picker.addPickList(clipActor); // so hover still works when clip is enabled
 
   // ----------------------------------------------------------------------------
   // Update PolyData
@@ -235,7 +240,7 @@ export function render({ model, el }) {
     polyData.setStrips(makeCellArray(data.strips));
 
     polyData.modified();
-    clipPlane.modified();
+    clipper.modified();
   }
 
   function updateScalars(data) {
@@ -271,7 +276,7 @@ export function render({ model, el }) {
     pd.modified();
     cd.modified();
     polyData.modified();
-    clipPlane.modified();
+    clipper.modified();
   }
 
   // ----------------------------------------------------------------------------
@@ -287,13 +292,14 @@ export function render({ model, el }) {
   function updateClipPlane(origin, normal) {
     if (origin) {
       clipOrigin = origin;
-      clipPlane.setOrigin(origin[0], origin[1], origin[2]);
+      plane.setOrigin(origin[0], origin[1], origin[2]);
     }
     if (normal) {
       clipNormal = normal;
-      clipPlane.setNormal(normal[0], normal[1], normal[2]);
+      plane.setNormal(normal[0], normal[1], normal[2]);
     }
 
+    plane.modified();
     clipper.modified();
     renderWindow.render();
   }
@@ -358,7 +364,8 @@ export function render({ model, el }) {
       (bounds[4] + bounds[5]) / 2,
     ];
     clipOrigin = center;
-    clipPlane.setOrigin(center[0], center[1], center[2]);
+    plane.setOrigin(center[0], center[1], center[2]);
+    clipper.modified();
     renderWindow.render();
   }
 
@@ -519,31 +526,26 @@ export function render({ model, el }) {
         break;
       case 'x':
         setClipAxis('x', 1);
-        syncClipStateToModel();
         handled = true;
         break;
       case 'y':
         setClipAxis('y', 1);
-        syncClipStateToModel();
         handled = true;
         break;
       case 'z':
         setClipAxis('z', 1);
-        syncClipStateToModel();
         handled = true;
         break;
       case 'arrowup':
       case '+':
       case '=':
         moveClipPlane(offset);
-        syncClipStateToModel();
         handled = true;
         break;
       case 'arrowdown':
       case '-':
       case '_':
         moveClipPlane(-offset);
-        syncClipStateToModel();
         handled = true;
         break;
     }
@@ -612,6 +614,7 @@ export function render({ model, el }) {
     resizeObserver.disconnect();
     el.removeEventListener('mousemove', onMouseMove);
     el.removeEventListener('mouseleave', onMouseLeave);
+    el.removeEventListener('keydown', onKeyDown);
     model.off?.('change:geometry', updateGeometry);
     model.off?.('change:colors', updateScalars);
     model.off?.('change:info', onInfoChange);

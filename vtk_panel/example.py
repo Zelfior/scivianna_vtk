@@ -78,10 +78,10 @@ def create_uniform_structured_grid(nx, ny, nz, spacing=1.0, cmap="viridis"):
     
     # Convert to PolyData for visualization using extract_surface to get proper polygons
     # This preserves cell data through vtkOriginalCellIds
-    poly = grid.extract_surface(algorithm='dataset_surface')
-    set_color(poly, cmap=cmap)
+    # poly = grid.extract_surface(algorithm='dataset_surface')
+    set_color(grid, cmap=cmap)
     
-    return poly
+    return grid
 
 
 def create_sliced_sphere(theta_count: int, phi_count: int, cmap="viridis") -> pv.PolyData:

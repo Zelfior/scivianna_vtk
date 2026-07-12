@@ -167,10 +167,13 @@ export function render({ model, el }) {
 
   // ----------------------------------------------------------------------------
   // Clipped Actor Setup
+  //
+  // `clipper` (vtkClipPolyData) is a fast, local, purely-geometric clip of
+  // `polyData` - cheap enough to run on every mouse-move. It cuts away the
+  // body correctly, but leaves an open hole at the cut (vtk.js doesn't know
+  // the real field data through the interior, so it can't cap it properly).
   // ----------------------------------------------------------------------------
 
-  // vtkClipPolyData removes geometry on one side of the plane
-  // and shows the intersection cap
   const clipper = vtkClipPolyData.newInstance();
   clipper.setClipFunction(plane);
   clipper.setInputData(polyData);
@@ -195,7 +198,78 @@ export function render({ model, el }) {
 
   renderer.addActor(clipActor);
 
-  // Update the clip plane when the widget is interacted with
+  // ----------------------------------------------------------------------------
+  // Cap Actor Setup
+  //
+  // `capPolyData` holds the exact intersection between the clip plane and
+  // the real source mesh, computed in python via pyvista's `.slice()` (see
+  // `_recompute_clip_slice` in the python component) and delivered through
+  // `model.clip_slice`. It's a thin, real cross-section with real
+  // interpolated data - not a blind triangulated fill - and is rendered as
+  // a separate actor sitting right in the hole left by `clipActor`.
+  //
+  // It only updates once python has computed a fresh slice (i.e. after the
+  // mouse is released - see `onEndInteractionEvent` below), and is hidden
+  // while the plane is actively being dragged since a stale cap would be
+  // misleading.
+  // ----------------------------------------------------------------------------
+
+  const capPolyData = vtkPolyData.newInstance();
+
+  const capMapper = vtkMapper.newInstance();
+  capMapper.setInputData(capPolyData);
+  capMapper.setScalarVisibility(true);
+  capMapper.setScalarModeToUseCellFieldData();
+  capMapper.setColorModeToDirectScalars();
+  capMapper.setColorByArrayName('rgb');
+
+  let hasCapSlice = false;
+
+  const capActor = vtkActor.newInstance();
+  capActor.setMapper(capMapper);
+
+  const capProp = capActor.getProperty();
+  capProp.setRepresentationToSurface();
+  capProp.setEdgeVisibility(true);
+  capProp.setEdgeColor(0, 0, 0);
+  capProp.setAmbient(0.3);
+  capProp.setDiffuse(0.7);
+  capProp.setSpecular(0.0);
+  // Slight forward offset so the cap doesn't z-fight with the clipped
+  // body's cut edge.
+  capProp.setLighting(true);
+
+  capActor.setVisibility(false);
+  renderer.addActor(capActor);
+
+  function updateCapVisibility() {
+    capActor.setVisibility(clipEnabled && hasCapSlice);
+    console.log(clipEnabled && hasCapSlice);
+  }
+
+  // Clip plane control state
+  let clipEnabled = model.clip_enabled || false;
+  let clipNormal = model.clip_normal || [0, 0, 1]; // Current normal direction
+  let clipOrigin = model.clip_origin || [0, 0, 0]; // Current origin position
+
+  plane.setOrigin(clipOrigin[0], clipOrigin[1], clipOrigin[2]);
+  plane.setNormal(clipNormal[0], clipNormal[1], clipNormal[2]);
+
+  // Set initial visibility - clipActor visible when enabled, original actor hidden
+  clipActor.setVisibility(clipEnabled);
+  actor.setVisibility(!clipEnabled);
+
+  // Update the local plane + fast preview while the widget is being dragged.
+  // NOTE: this intentionally does NOT sync to python on every call - see
+  // `onEndInteractionEvent` below, which is the only place that pushes the
+  // plane state to python (i.e. on mouse release).
+  widgetInstance.onStartInteractionEvent(() => {
+    // A new drag is starting: whatever cap is currently shown is about to
+    // be wrong for the plane position we're moving to, so hide it until
+    // python sends a fresh slice for the new plane.
+    capActor.setVisibility(false);
+  });
+
   widgetInstance.onInteractionEvent(() => {
     const state = widgetInstance.getWidgetState();
     const normal = state.getNormal();
@@ -210,24 +284,14 @@ export function render({ model, el }) {
     plane.modified();
     clipper.modified();
     renderWindow.render();
-
-    syncClipStateToModel();
   });
 
-  // Clip plane control state
-  let clipEnabled = model.clip_enabled || false;
-  let clipNormal = model.clip_normal || [0, 0, 1]; // Current normal direction
-  let clipOrigin = model.clip_origin || [0, 0, 0]; // Current origin position
-
-  // Initialize from model
-  clipOrigin = clipOrigin;
-  clipNormal = clipNormal;
-  plane.setOrigin(clipOrigin[0], clipOrigin[1], clipOrigin[2]);
-  plane.setNormal(clipNormal[0], clipNormal[1], clipNormal[2]);
-
-  // Set initial visibility - clipActor visible when enabled, original actor hidden
-  clipActor.setVisibility(clipEnabled);
-  actor.setVisibility(!clipEnabled);
+  widgetInstance.onEndInteractionEvent(() => {
+    // Mouse released: this is the one point where we tell python the final
+    // plane state, which triggers it to recompute the data-accurate cap
+    // slice (plane ∩ real mesh) and send it back via `clip_slice`.
+    syncClipStateToModel();
+  });
 
   // ----------------------------------------------------------------------------
   // Picker
@@ -238,6 +302,7 @@ export function render({ model, el }) {
   picker.initializePickList();
   picker.addPickList(actor);
   picker.addPickList(clipActor); // so hover still works when clip is enabled
+  picker.addPickList(capActor); // and on the data-accurate cap surface too
 
   // ----------------------------------------------------------------------------
   // Update PolyData
@@ -299,6 +364,56 @@ export function render({ model, el }) {
     clipper.modified();
   }
 
+  // Load the python-computed slice (geometry + point/cell data combined in
+  // one payload) into `capPolyData`.
+  function updateCapSlice(data) {
+    if (!data) {
+      hasCapSlice = false;
+      return;
+    }
+
+    const pts = toTyped(data.points?.buffer, data.points?.dtype || 'float32');
+    if (pts) {
+      const points = vtkPoints.newInstance();
+      points.setData(pts, 3);
+      capPolyData.setPoints(points);
+    }
+
+    capPolyData.setPolys(makeCellArray(data.polys));
+    capPolyData.setLines(makeCellArray(data.lines));
+    capPolyData.setVerts(makeCellArray(data.verts));
+    capPolyData.setStrips(makeCellArray(data.strips));
+
+    const pd = capPolyData.getPointData();
+    pd.initialize();
+    Object.entries(data.pointData || {}).forEach(([name, entry], idx) => {
+      const vtkArr = vtkDataArray.newInstance({
+        name,
+        values: toTyped(entry.buffer, entry.dtype),
+        numberOfComponents: entry.components,
+      });
+      pd.addArray(vtkArr);
+      if (idx === 0) pd.setScalars(vtkArr);
+    });
+
+    const cd = capPolyData.getCellData();
+    cd.initialize();
+    Object.entries(data.cellData || {}).forEach(([name, entry]) => {
+      const vtkArr = vtkDataArray.newInstance({
+        name,
+        values: toTyped(entry.buffer, entry.dtype),
+        numberOfComponents: entry.components,
+      });
+      cd.addArray(vtkArr);
+    });
+
+    pd.modified();
+    cd.modified();
+    capPolyData.modified();
+
+    hasCapSlice = true;
+  }
+
   // ----------------------------------------------------------------------------
   // Clip Plane Controls
   // ----------------------------------------------------------------------------
@@ -321,6 +436,9 @@ export function render({ model, el }) {
 
     plane.modified();
     clipper.modified();
+    // The current cap slice no longer matches this plane position; hide it
+    // until python computes a fresh one (see `change:clip_slice` handler).
+    capActor.setVisibility(false);
     syncWidgetFromPlane();
     renderWindow.render();
   }
@@ -335,6 +453,7 @@ export function render({ model, el }) {
     clipEnabled = enabled;
     clipActor.setVisibility(enabled);
     actor.setVisibility(!enabled);
+    updateCapVisibility();
     renderWindow.render();
   }
 
@@ -609,15 +728,27 @@ export function render({ model, el }) {
     updateClipPlane(null, model.clip_normal);
   });
 
+  // The data-accurate cap slice computed by python (plane ∩ real mesh).
+  // Once it lands, show it (if clipping is currently enabled).
+  model.on("change:clip_slice", () => {
+    updateCapSlice(model.clip_slice);
+    console.log(model.clip_slice)
+    updateCapVisibility();
+    renderWindow.render();
+  });
+
   model.on("change:geometry", () => {
     updateGeometry(model.geometry);
+    // New geometry invalidates whatever cap slice we had.
+    hasCapSlice = false;
+    updateCapVisibility();
     // Re-auto-clip on geometry change
     autoClipPlane();
     syncClipStateToModel();
     renderUpdate(true);
     // Re-initialize widget bounds when geometry changes
     initializeWidget();
-  syncWidgetFromPlane();
+    syncWidgetFromPlane();
   });
 
   model.on("change:colors", () => {

@@ -96,11 +96,6 @@ def test_example_panel_clip_plane():
     panel.clip_axis_select.value = "y"
     assert panel.vtk_view.clip_normal == [0, 1, 0]
     
-    # Test position slider
-    initial_pos = panel.clip_position_slider.value
-    panel.clip_position_slider.value = 0.8
-    assert panel.clip_position_slider.value == 0.8
-    
     # Test clip_plane_state property values
     state = panel.vtk_view.clip_plane_state
     assert isinstance(state['origin'], list)

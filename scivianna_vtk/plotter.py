@@ -340,9 +340,9 @@ class VTKPlotter(JSComponent):
             if mesh.GetPolys().GetNumberOfCells() == 0 and hasattr(mesh, 'extract_surface'):
                 mesh = _convert_cells_to_polys(mesh)
             return polydata_to_dict(mesh)
-        elif isinstance(mesh, pv.UnstructuredGrid):
+        elif isinstance(mesh, (pv.StructuredGrid, pv.UnstructuredGrid)):
             return unstructured_grid_to_dict(mesh)
-        elif isinstance(mesh, (pv.StructuredGrid, pv.RectilinearGrid, pv.ImageData)):
+        elif isinstance(mesh, (pv.RectilinearGrid, pv.ImageData)):
             # Convert to PolyData using extract_surface for proper polygon generation
             poly = mesh.extract_surface(algorithm='dataset_surface')
             return polydata_to_dict(poly)

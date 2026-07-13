@@ -1,8 +1,33 @@
 """
-scivianna_vtk - Python module for interactive VTK/PyVista visualization with vtk.js
+scivianna_vtk - Interactive VTK/PyVista visualization with vtk.js for Panel.
 
-This package provides Panel components for interactive 3D visualization using vtk.js,
-bundled as part of the scivianna_vtk pip package.
+This package provides Panel JSComponent-based tools for interactive 3D 
+visualization using vtk.js, bundled as part of the scivianna_vtk pip package.
+
+Features
+--------
+- Convert pyvista meshes (PolyData, UnstructuredGrid, StructuredGrid) to 
+  vtk.js-compatible binary format
+- Interactive 3D visualization with hover cell identification
+- Clip plane visualization with data-accurate slice capping
+- Plane overlay display
+- Colormap-based cell coloring
+
+Examples
+--------
+>>> from scivianna_vtk import VTKPlotter
+>>> import pyvista as pv
+>>> sphere = pv.Sphere()
+>>> plotter = VTKPlotter()
+>>> plotter.update_polydata(sphere)
+
+>>> from scivianna_vtk import polydata_to_dict
+>>> data = polydata_to_dict(sphere)
+
+Modules
+-------
+plotter : VTK plotting and mesh conversion utilities
+example : ExamplePanel UI component for interactive visualization
 """
 
 from .plotter import (

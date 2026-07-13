@@ -489,6 +489,10 @@ export function render({ model, el }) {
     // be wrong for the plane position we're moving to, so hide it until
     // python sends a fresh slice for the new plane.
     capActor.setVisibility(false);
+    mainEdgeActor.setVisibility(false);
+    clipEdgeActor.setVisibility(false);
+    capEdgeActor.setVisibility(false);
+
     syncPickList();
   });
 
@@ -514,6 +518,11 @@ export function render({ model, el }) {
     // slice (plane ∩ real mesh) and send it back via `clip_slice`.
     syncClipStateToModel();
     refreshClipEdges();
+
+    // Restore edge visibility
+    syncEdgeVisibility();
+
+    renderWindow.render();
   });
 
   // ----------------------------------------------------------------------------
@@ -806,57 +815,80 @@ export function render({ model, el }) {
     return out;
   }
 
-  function clearHighlight() {
-    if (!highlight) return;
-    const { array, cellId, original, dataset } = highlight;
-    array.setTuple(cellId, original);
-    array.modified();
-    dataset.modified();
-    highlight = null;
+function clearHighlight() {
+  if (!highlight) return;
+  const { array, dataset, indices, originals } = highlight;
+  indices.forEach((i, idx) => array.setTuple(i, originals[idx]));
+  array.modified();
+  dataset.modified();
+  highlight = null;
+}
+// groupKey uniquely identifies "this cell_id, in this dataset" so that
+// moving the mouse between two triangles that share the same cell_id
+// doesn't flicker the highlight off and back on.
+function computeGroupKey(dataset, cellId, cellValue) {
+  if (!dataset) return null;
+  const cellIdArray = dataset.getCellData().getArrayByName('cell_id');
+  return cellIdArray ? `v:${cellValue}` : `c:${cellId}`;
+}
+
+function applyHighlight(dataset, cellId, cellValue, groupKey) {
+  if (!dataset || cellId < 0) return;
+  const cd = dataset.getCellData();
+  const array = cd.getArrayByName('rgb');
+  if (!array || cellId >= array.getNumberOfTuples()) return;
+
+  const cellIdArray = cd.getArrayByName('cell_id');
+  let indices;
+  if (cellIdArray) {
+    // Darken every cell sharing this cell_id value.
+    indices = [];
+    const n = cellIdArray.getNumberOfTuples();
+    for (let i = 0; i < n; i++) {
+      if (cellIdArray.getValue(i) === cellValue) indices.push(i);
+    }
+  } else {
+    // No cell_id grouping available - fall back to single-cell behavior.
+    indices = [cellId];
   }
 
-  function applyHighlight(dataset, cellId) {
-    if (!dataset || cellId < 0) return;
-    const cd = dataset.getCellData();
-    const array = cd.getArrayByName('rgb');
-    if (!array || cellId >= array.getNumberOfTuples()) return;
-
-    const original = Array.from(array.getTuple(cellId));
-    highlight = { array, cellId, original, dataset };
-    array.setTuple(cellId, darkenTuple(original));
-    array.modified();
-    dataset.modified();
-  }
-
+  const originals = indices.map((i) => Array.from(array.getTuple(i)));
+  highlight = { array, dataset, groupKey, indices, originals };
+  indices.forEach((i, idx) => array.setTuple(i, darkenTuple(originals[idx])));
+  array.modified();
+  dataset.modified();
+}
   function updateHover(cellId, cellValue, world, dataset = null) {
-    const x = world?.[0] ?? NaN;
-    const y = world?.[1] ?? NaN;
-    const z = world?.[2] ?? NaN;
+  const x = world?.[0] ?? NaN;
+  const y = world?.[1] ?? NaN;
+  const z = world?.[2] ?? NaN;
 
-    if (
-      lastHover.cellId === cellId &&
-      lastHover.cellValue === cellValue &&
-      lastHover.dataset === dataset &&
-      lastHover.position[0] === x &&
-      lastHover.position[1] === y &&
-      lastHover.position[2] === z
-    ) {
-      return;
-    }
-
-    // Swap the darken-highlight to the newly hovered cell (if any).
-    if (highlight && (highlight.dataset !== dataset || highlight.cellId !== cellId)) {
-      clearHighlight();
-    }
-    if (dataset && cellId >= 0 && !highlight) {
-      applyHighlight(dataset, cellId);
-    }
-
-    lastHover = { cellId, cellValue, position: [x, y, z], dataset };
-    model.hover_cell_id = cellId;
-    model.hover_cell_value = cellValue ?? -1;
-    model.hover_position = [x, y, z];
+  if (
+    lastHover.cellId === cellId &&
+    lastHover.cellValue === cellValue &&
+    lastHover.dataset === dataset &&
+    lastHover.position[0] === x &&
+    lastHover.position[1] === y &&
+    lastHover.position[2] === z
+  ) {
+    return;
   }
+
+  const groupKey = computeGroupKey(dataset, cellId, cellValue);
+
+  // Swap the darken-highlight to the newly hovered cell_id group (if any).
+  if (highlight && (highlight.dataset !== dataset || highlight.groupKey !== groupKey)) {
+    clearHighlight();
+  }
+  if (dataset && cellId >= 0 && !highlight) {
+    applyHighlight(dataset, cellId, cellValue, groupKey);
+  }
+
+  lastHover = { cellId, cellValue, position: [x, y, z], dataset };
+  model.hover_cell_id = cellId;
+  model.hover_cell_value = cellValue ?? -1;
+  model.hover_position = [x, y, z];
+}
 
   function onMouseMove(e) {
     if (!hoverEnabled) return;

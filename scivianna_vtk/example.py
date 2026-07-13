@@ -1,7 +1,7 @@
 import param
 import numpy as np
 import panel_material_ui as pmui
-from plotter import VTKPlotter, polydata_to_dict
+from scivianna_vtk.plotter import VTKPlotter, polydata_to_dict
 import matplotlib.pyplot as plt  # For colormaps
 import pyvista as pv
 

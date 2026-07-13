@@ -1,1 +1,1 @@
-esbuild ./vtk_panel/dist/app.js --bundle --format=esm --minify --outfile=vtk_panel/VTKPlotter.bundle.js --loader:.js=jsx
+esbuild ./scivianna_vtk/dist/app.js --bundle --format=esm --minify --outfile=scivianna_vtk/VTKPlotter.bundle.js --loader:.js=jsx

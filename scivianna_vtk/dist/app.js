@@ -937,15 +937,18 @@ function applyHighlight(dataset, cellId, cellValue, groupKey) {
     const cellData = dataset.getCellData();
     const cellIdArray = cellData.getArrayByName('cell_id');
     const rgbaArray = cellData.getArrayByName('rgba');
+    const cellValueArray = cellData.getArrayByName('cell_value');
 
-    const cellValue = cellIdArray ? cellIdArray.getValue(pickedCellId) : 'N/A';
+    
+    const cellId = cellIdArray ? cellIdArray.getValue(pickedCellId) : 'N/A';
+    const cellValue = cellValueArray ? cellValueArray.getValue(pickedCellId) : 'N/A';
     const rgba = rgbaArray ? rgbaArray.getTuple(pickedCellId) : null;
 
-    updateHover(pickedCellId, cellValue, world, dataset);
+    updateHover(cellId, cellValue, world, dataset);
     renderWindow.render();
 
     tooltip.innerHTML = `
-      <div><b>cell_id</b>: ${pickedCellId}</div>
+      <div><b>cell_id</b>: ${cellId}</div>
       <div><b>cell_value</b>: ${cellValue}</div>
       <div><b>xyz</b>: ${world.map(v => v.toFixed(4)).join(', ')}</div>
       ${rgba ? `<div><b>rgba</b>: ${rgba.map(v => Math.round(v)).join(', ')}</div>` : ''}

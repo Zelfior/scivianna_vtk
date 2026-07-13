@@ -944,7 +944,7 @@ function applyHighlight(dataset, cellId, cellValue, groupKey) {
     const cellValue = cellValueArray ? cellValueArray.getValue(pickedCellId) : 'N/A';
     const rgba = rgbaArray ? rgbaArray.getTuple(pickedCellId) : null;
 
-    updateHover(cellId, cellValue, world, dataset);
+    updateHover(pickedCellId, cellId, world, dataset);
     renderWindow.render();
 
     tooltip.innerHTML = `

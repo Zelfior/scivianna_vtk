@@ -356,6 +356,8 @@ class VTKPlotter(JSComponent):
 
     plane_visible = param.Boolean(default=False, doc="Plane visualization visible")
 
+    clicks = param.Integer(default=0, doc="Number of clicks on the plotter")
+
     # _importmap = {
     #     "imports": {
     #         "@kitware/vtk.js": "https://esm.sh/@kitware/vtk.js@35.15.1",

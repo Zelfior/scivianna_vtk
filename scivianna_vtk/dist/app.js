@@ -1074,6 +1074,11 @@ function applyHighlight(dataset, cellId, cellValue, groupKey) {
   el.addEventListener('keydown', onKeyDown);
   el.focus();
 
+  function onMouseClick() {
+    model.clicks = (model.clicks || 0) + 1;
+  }
+
+  el.addEventListener('click', onMouseClick);
   // ----------------------------------------------------------------------------
   // Watch model updates
   // ----------------------------------------------------------------------------
@@ -1160,6 +1165,7 @@ function applyHighlight(dataset, cellId, cellValue, groupKey) {
     el.removeEventListener('mousemove', onMouseMove);
     el.removeEventListener('mouseleave', onMouseLeave);
     el.removeEventListener('keydown', onKeyDown);
+    el.removeEventListener('click', onMouseClick);
     model.off?.('change:geometry', updateGeometry);
     model.off?.('change:colors', updateScalars);
     model.off?.('change:info', onInfoChange);

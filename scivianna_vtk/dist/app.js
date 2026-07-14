@@ -1073,12 +1073,32 @@ function applyHighlight(dataset, cellId, cellValue, groupKey) {
   el.style.outline = 'none';
   el.addEventListener('keydown', onKeyDown);
   el.focus();
+  
+  let mouseDown = null;
+  const DRAG_THRESHOLD = 5;
 
-  function onMouseClick() {
-    model.clicks = (model.clicks || 0) + 1;
+  function onMouseDown(e) {
+    mouseDown = {
+      x: e.clientX,
+      y: e.clientY,
+    };
   }
 
-  el.addEventListener('click', onMouseClick);
+  function onMouseUp(e) {
+    if (!mouseDown) return;
+
+    const dx = e.clientX - mouseDown.x;
+    const dy = e.clientY - mouseDown.y;
+
+    if (Math.hypot(dx, dy) < DRAG_THRESHOLD) {
+      model.clicks = (model.clicks || 0) + 1;
+    }
+
+    mouseDown = null;
+  }
+
+  el.addEventListener('mousedown', onMouseDown);
+  el.addEventListener('mouseup', onMouseUp);
   // ----------------------------------------------------------------------------
   // Watch model updates
   // ----------------------------------------------------------------------------
@@ -1165,7 +1185,8 @@ function applyHighlight(dataset, cellId, cellValue, groupKey) {
     el.removeEventListener('mousemove', onMouseMove);
     el.removeEventListener('mouseleave', onMouseLeave);
     el.removeEventListener('keydown', onKeyDown);
-    el.removeEventListener('click', onMouseClick);
+    el.removeEventListener('mousedown', onMouseDown);
+    el.removeEventListener('mouseup', onMouseUp);
     model.off?.('change:geometry', updateGeometry);
     model.off?.('change:colors', updateScalars);
     model.off?.('change:info', onInfoChange);

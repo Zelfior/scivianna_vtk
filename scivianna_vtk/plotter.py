@@ -445,6 +445,8 @@ class VTKPlotter(JSComponent):
         if origin is not None:
             self.clip_origin = list(origin)
         if normal is not None:
+            if np.allclose(normal, self.clip_normal, rtol=1e-4):
+                return
             self.clip_normal = list(normal)
 
     def set_clip_axis(self, axis: str, sign: int = 1):

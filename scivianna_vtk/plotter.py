@@ -409,7 +409,8 @@ class VTKPlotter(JSComponent):
         enabled : bool
             Whether to show the plane visualization.
         """
-        self.plane_visible = enabled
+        if self.plane_visible != enabled:
+            self.plane_visible = enabled
 
     def set_clip_enabled(self, enabled: bool):
         """
@@ -420,7 +421,8 @@ class VTKPlotter(JSComponent):
         enabled : bool
             Whether to enable clipping of the rendered geometry.
         """
-        self.clip_enabled = enabled
+        if self.clip_enabled != enabled:
+            self.clip_enabled = enabled
 
     def set_clip_plane(self, origin=None, normal=None):
         """
@@ -442,8 +444,14 @@ class VTKPlotter(JSComponent):
         >>> plotter.set_clip_plane(normal=[1, 0, 0])
         >>> plotter.set_clip_plane(origin=[0, 0, 0], normal=[0, 0, 1])
         """
+        print(origin, self.clip_origin)
+        print(normal, self.clip_normal)
         if origin is not None:
-            self.clip_origin = list(origin)
+            if not np.isclose(
+                origin,
+                self.clip_origin
+            ).all():
+                self.clip_origin = list(origin)
         if normal is not None:
             if np.allclose(normal, self.clip_normal, rtol=1e-4):
                 return

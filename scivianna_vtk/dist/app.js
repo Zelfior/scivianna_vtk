@@ -466,6 +466,7 @@ export function render({ model, el }) {
     capActor.setVisibility(clipEnabled && hasCapSlice);
     syncPickList();
     syncEdgeVisibility();
+    renderUpdate(true);
   }
 
   // Clip plane control state
@@ -686,6 +687,7 @@ export function render({ model, el }) {
 
     plane.modified();
     clipper.modified();
+    clipper.update();
     refreshClipEdges();
     // The current cap slice no longer matches this plane position; hide it
     // until python computes a fresh one (see `change:clip_slice` handler).
@@ -1127,9 +1129,9 @@ function applyHighlight(dataset, cellId, cellValue, groupKey) {
     // be replaced - drop the stale reference.
     if (highlight && highlight.dataset === capPolyData) clearHighlight();
     updateCapSlice(model.clip_slice);
-    updateCapVisibility();
     refreshCapEdges();
-    renderWindow.render();
+    updateCapVisibility();
+    renderUpdate(false);
   });
 
   model.on("change:geometry", () => {
@@ -1166,6 +1168,7 @@ function applyHighlight(dataset, cellId, cellValue, groupKey) {
 
   model.on("change:plane_visible", () => {
     setPlaneWidgetVisible(model.plane_visible);
+    renderUpdate(false);
   });
 
   // ----------------------------------------------------------------------------

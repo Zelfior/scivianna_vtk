@@ -1,4 +1,5 @@
 import param
+import panel as pn
 from panel.custom import JSComponent
 import numpy as np
 import pyvista as pv
@@ -424,6 +425,7 @@ class VTKPlotter(JSComponent):
         if self.clip_enabled != enabled:
             self.clip_enabled = enabled
 
+    @pn.io.hold()
     def set_clip_plane(self, origin=None, normal=None):
         """
         Set clip plane position and orientation.
@@ -444,18 +446,20 @@ class VTKPlotter(JSComponent):
         >>> plotter.set_clip_plane(normal=[1, 0, 0])
         >>> plotter.set_clip_plane(origin=[0, 0, 0], normal=[0, 0, 1])
         """
-        print(origin, self.clip_origin)
-        print(normal, self.clip_normal)
         if origin is not None:
             if not np.isclose(
                 origin,
                 self.clip_origin
             ).all():
                 self.clip_origin = list(origin)
+                
         if normal is not None:
             if np.allclose(normal, self.clip_normal, rtol=1e-4):
                 return
             self.clip_normal = list(normal)
+
+        if (origin is not None or normal is not None) and self.clip_enabled:
+            self._recompute_clip_slice(None)
 
     def set_clip_axis(self, axis: str, sign: int = 1):
         """
@@ -567,7 +571,6 @@ class VTKPlotter(JSComponent):
     # -------------------------------------------------------------------------
     # Precise (data-accurate) clip cap
     # -------------------------------------------------------------------------
-
     def _recompute_clip_slice(self, *events):
         """
         Compute the exact intersection between the clip plane and the real 
@@ -610,7 +613,7 @@ class VTKPlotter(JSComponent):
         if mesh_slice is None or mesh_slice.n_points == 0:
             self.clip_slice = None
             return
-
+        
         d = self._convert_mesh(mesh_slice)
 
         self.clip_slice = {
@@ -621,8 +624,10 @@ class VTKPlotter(JSComponent):
             "strips": d["strips"],
             "pointData": d["pointData"],
             "cellData": d["cellData"],
+            "origin": self.clip_origin
         }
 
+    @pn.io.hold()
     def update_polydata(self, polydata):
         """
         Update the plotter with new geometry and data.
@@ -665,6 +670,7 @@ class VTKPlotter(JSComponent):
         # New geometry invalidates any previously computed clip cap.
         self._recompute_clip_slice()
 
+    @pn.io.hold()
     def update_colors(self, polydata):
         """
         Update only the color data while keeping the same geometry.

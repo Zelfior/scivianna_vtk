@@ -730,22 +730,32 @@ export function render({ model, el }) {
    * @param {'x' | 'y' | 'z'} axis - Axis for the normal direction
    * @param {number} sign - Direction sign (1 or -1)
    */
-  function setClipAxis(axis, sign = 1) {
-    let normal;
-    switch (axis) {
-      case 'x':
-        normal = [sign, 0, 0];
-        break;
-      case 'y':
-        normal = [0, sign, 0];
-        break;
-      case 'z':
-      default:
-        normal = [0, 0, sign];
-        break;
-    }
-    updateClipPlane(null, normal);
+  function setClipAxis(axis) {
+  const axes = {
+    x: [1, 0, 0],
+    y: [0, 1, 0],
+    z: [0, 0, 1],
+  };
+
+  const target = axes[axis];
+  const eps = 1e-6;
+
+  // Already pointing along this axis (either + or -)?
+  const aligned =
+    Math.abs(Math.abs(clipNormal[0]) - Math.abs(target[0])) < eps &&
+    Math.abs(Math.abs(clipNormal[1]) - Math.abs(target[1])) < eps &&
+    Math.abs(Math.abs(clipNormal[2]) - Math.abs(target[2])) < eps;
+
+  if (aligned) {
+    updateClipPlane(null, [
+      -clipNormal[0],
+      -clipNormal[1],
+      -clipNormal[2],
+    ]);
+  } else {
+    updateClipPlane(null, target);
   }
+}
 
   /**
    * Auto-position clip plane at geometry center
@@ -1037,17 +1047,26 @@ function applyHighlight(dataset, cellId, cellValue, groupKey) {
         handled = true;
         break;
       case 'x':
-        setClipAxis('x', 1);
+        setClipAxis('x');
         handled = true;
         break;
       case 'y':
-        setClipAxis('y', 1);
+        setClipAxis('y');
         handled = true;
         break;
       case 'z':
-        setClipAxis('z', 1);
+        setClipAxis('z');
         handled = true;
         break;
+      case 'f':
+        updateClipPlane(null, [
+          -clipNormal[0],
+          -clipNormal[1],
+          -clipNormal[2],
+        ]);
+        handled = true;
+        break;
+
       case 'v':
         setPlaneWidgetVisible(!planeEnabled);
         handled = true;

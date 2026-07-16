@@ -81,7 +81,7 @@ else {
     }
 }
 
-python -m pip install --upgrade pip setuptools tox
+python -m pip install --upgrade pip setuptools tox uv
 
 ########################
 # Tag version
@@ -97,7 +97,7 @@ git tag $versionName
 # Install current version
 ########################
 
-python -m pip install --upgrade $projectRootDir
+python -m uv pip install --upgrade $projectRootDir
 
 Push-Location $projectRootDir
 tox

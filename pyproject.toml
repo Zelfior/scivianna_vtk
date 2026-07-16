@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "scivianna-vtk"
-version = "0.1.1"
+dynamic = ["version"]
 description = "Interactive VTK/PyVista visualization with vtk.js for Panel"
 readme = "README.md"
 license = { text = "MIT" }
@@ -16,6 +16,10 @@ dependencies = [
     "pyvista>=0.43.0",
     "vtk>=9.0.0",
 ]
+
+[tool.setuptools.dynamic]
+version = { file = ["scivianna_vtk/VERSION"] }
+
 
 [project.optional-dependencies]
 dev = [

@@ -29,6 +29,7 @@ Modules
 plotter : VTK plotting and mesh conversion utilities
 example : ExamplePanel UI component for interactive visualization
 """
+from pathlib import Path
 
 from .plotter import (
     VTKPlotter,
@@ -39,7 +40,9 @@ from .plotter import (
     _pyvista_to_numpy,
 )
 
-__version__ = "0.1.0"
+__version__ = Path(__file__).parent / "VERSION"
+__version__ = __version__.read_text().strip()
+
 __all__ = [
     "VTKPlotter",
     "polydata_to_dict",

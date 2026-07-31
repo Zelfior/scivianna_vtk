@@ -465,6 +465,30 @@ class VTKPlotter(JSComponent):
         if (origin is not None or normal is not None) and self.clip_enabled:
             self._recompute_clip_slice(None)
 
+    def set_edges_visible(self, visible: bool):
+        """
+        Enable or disable feature edges visualization.
+        
+        Parameters
+        ----------
+        visible : bool
+            Whether to show feature edges.
+        """
+        if self.edges_visible != visible:
+            self.edges_visible = visible
+
+    def set_info(self, enabled: bool):
+        """
+        Enable or disable the info panel.
+        
+        Parameters
+        ----------
+        enabled : bool
+            Whether to show the info panel.
+        """
+        if self.info != enabled:
+            self.info = enabled
+
     def set_clip_axis(self, axis: str, sign: int = 1):
         """
         Set clip plane normal to a cardinal direction.

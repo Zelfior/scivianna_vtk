@@ -391,6 +391,11 @@ class ExamplePanel(param.Parameterized):
             value="z",
             sizing_mode="stretch_width",
         )
+        self.edges_visible = pmui.Checkbox(
+            label="Show Edges",
+            value=True,
+            sizing_mode="stretch_width",
+        )
 
         self.theta_slider.param.watch(self._update_vtp_data, "value")
         self.phi_slider.param.watch(self._update_vtp_data, "value")
@@ -400,6 +405,7 @@ class ExamplePanel(param.Parameterized):
         self.plane_enabled.param.watch(self._update_plane_enabled, "value")
         self.clip_enabled.param.watch(self._update_clip_enabled, "value")
         self.clip_axis_select.param.watch(self._update_clip_axis, "value")
+        self.edges_visible.param.watch(self._update_edges_visible, "value")
 
         self.poly = create_sliced_sphere(
             theta_count=self.theta_slider.value,
@@ -510,6 +516,7 @@ class ExamplePanel(param.Parameterized):
                 self.plane_enabled,
                 self.clip_enabled,
                 self.clip_axis_select,
+                self.edges_visible,
                 self.description_clip,
 
                 self.display_info,
@@ -631,6 +638,20 @@ class ExamplePanel(param.Parameterized):
         self.vtk_view.set_clip_axis(self.clip_axis_select.value)
         # Sync the origin to center after axis change
         self._update_clip_position()
+        
+    def _update_edges_visible(self, event=None):
+        """
+        Toggle edge display visibility.
+        
+        Syncs the edges_visible checkbox state to the VTKPlotter's edges_visible 
+        parameter.
+        
+        Parameters
+        ----------
+        event : param.parameterized.Event, optional
+            Parameter change event (unused, for watch callback compatibility).
+        """
+        self.vtk_view.edges_visible = self.edges_visible.value
         
     def _update_clip_position(self, event=None):
         """

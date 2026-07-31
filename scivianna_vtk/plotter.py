@@ -308,6 +308,8 @@ class VTKPlotter(JSComponent):
         Clip plane normal vector as [x, y, z]. Default is [0.0, 0.0, 1.0].
     plane_visible : bool, optional
         Show/hide the plane visualization overlay. Default is False.
+    edges_visible : bool, optional
+        Show/hide feature edges. Default is True.
     
     Attributes
     ----------
@@ -356,6 +358,8 @@ class VTKPlotter(JSComponent):
     clip_normal = param.List(default=[0.0, 0.0, 1.0], doc="Clip plane normal [x, y, z]")
 
     plane_visible = param.Boolean(default=False, doc="Plane visualization visible")
+
+    edges_visible = param.Boolean(default=True, doc="Show/hide feature edges")
 
     clicks = param.Integer(default=0, doc="Number of clicks on the plotter")
 

@@ -408,12 +408,19 @@ export function render({ model, el }) {
   let hasClipEdges = false;
   let hasCapEdges = false;
 
+  // Edge visibility control
+  let edgesVisible = (model.edges_visible !== undefined && model.edges_visible !== null) ? model.edges_visible : true;
+  // Track if edges need refreshing (geometry changed while edges were hidden)
+  let mainEdgesStale = false;
+  let clipEdgesStale = false;
+  let capEdgesStale = false;
+
   // Edge actors mirror the visibility of the surface they belong to (no
   // point showing clip edges while the clipped body itself is hidden).
   function syncEdgeVisibility() {
-    mainEdgeActor.setVisibility(hasMainEdges && actor.getVisibility());
-    clipEdgeActor.setVisibility(hasClipEdges && clipActor.getVisibility());
-    capEdgeActor.setVisibility(hasCapEdges && capActor.getVisibility());
+    mainEdgeActor.setVisibility(edgesVisible && hasMainEdges && actor.getVisibility());
+    clipEdgeActor.setVisibility(edgesVisible && hasClipEdges && clipActor.getVisibility());
+    capEdgeActor.setVisibility(edgesVisible && hasCapEdges && capActor.getVisibility());
   }
 
   function loadEdgesInto(sourcePolyData, targetEdgePolyData) {
@@ -450,15 +457,30 @@ export function render({ model, el }) {
   // every mouse-move frame. During an active drag the clip edges simply
   // stay as they were until the mouse is released.
   function refreshMainEdges() {
-    hasMainEdges = loadEdgesInto(polyData, mainEdgePolyData);
+    if (edgesVisible) {
+      hasMainEdges = loadEdgesInto(polyData, mainEdgePolyData);
+      mainEdgesStale = false;
+    } else {
+      mainEdgesStale = true;
+    }
     syncEdgeVisibility();
   }
   function refreshClipEdges() {
-    hasClipEdges = loadEdgesInto(clipper.getOutputData(), clipEdgePolyData);
+    if (edgesVisible) {
+      hasClipEdges = loadEdgesInto(clipper.getOutputData(), clipEdgePolyData);
+      clipEdgesStale = false;
+    } else {
+      clipEdgesStale = true;
+    }
     syncEdgeVisibility();
   }
   function refreshCapEdges() {
-    hasCapEdges = hasCapSlice ? loadEdgesInto(capPolyData, capEdgePolyData) : false;
+    if (edgesVisible) {
+      hasCapEdges = hasCapSlice ? loadEdgesInto(capPolyData, capEdgePolyData) : false;
+      capEdgesStale = false;
+    } else {
+      capEdgesStale = true;
+    }
     syncEdgeVisibility();
   }
 
@@ -467,6 +489,34 @@ export function render({ model, el }) {
     syncPickList();
     syncEdgeVisibility();
     renderUpdate(true);
+  }
+
+  /**
+   * Enable or disable edge display
+   * @param {boolean} enabled - Whether to show edges
+   */
+  function setEdgesVisible(enabled) {
+    const wasVisible = edgesVisible;
+    edgesVisible = enabled;
+    
+    // If turning on and edges are stale, refresh them
+    if (enabled && !wasVisible) {
+      if (mainEdgesStale) {
+        hasMainEdges = loadEdgesInto(polyData, mainEdgePolyData);
+        mainEdgesStale = false;
+      }
+      if (clipEdgesStale) {
+        hasClipEdges = loadEdgesInto(clipper.getOutputData(), clipEdgePolyData);
+        clipEdgesStale = false;
+      }
+      if (capEdgesStale) {
+        hasCapEdges = hasCapSlice ? loadEdgesInto(capPolyData, capEdgePolyData) : false;
+        capEdgesStale = false;
+      }
+    }
+    
+    syncEdgeVisibility();
+    renderWindow.render();
   }
 
   // Clip plane control state
@@ -995,11 +1045,13 @@ function applyHighlight(dataset, cellId, cellValue, groupKey) {
     update: updateClipPlane,
     setEnabled: setClipEnabled,
     setPlaneVisible: setPlaneWidgetVisible,
+    setEdgesVisible: setEdgesVisible,
     move: moveClipPlane,
     setAxis: setClipAxis,
     getState: () => ({
       enabled: clipEnabled,
       planeVisible: planeEnabled,
+      edgesVisible: edgesVisible,
       origin: [...clipOrigin],
       normal: [...clipNormal],
     }),
@@ -1187,6 +1239,11 @@ function applyHighlight(dataset, cellId, cellValue, groupKey) {
 
   model.on("change:plane_visible", () => {
     setPlaneWidgetVisible(model.plane_visible);
+    renderUpdate(false);
+  });
+
+  model.on("change:edges_visible", () => {
+    setEdgesVisible(model.edges_visible);
     renderUpdate(false);
   });
 

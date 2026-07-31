@@ -17,6 +17,9 @@ import vtkClipPolyData from '@kitware/vtk.js/Filters/Core/ClipPolyData';
 import vtkImplicitPlaneWidget from '@kitware/vtk.js/Widgets/Widgets3D/ImplicitPlaneWidget';
 import vtkWidgetManager from '@kitware/vtk.js/Widgets/Core/WidgetManager';
 
+import vtkScalarBarActor from '@kitware/vtk.js/Rendering/Core/ScalarBarActor';
+import vtkColorTransferFunction from '@kitware/vtk.js/Rendering/Core/ColorTransferFunction';
+
 export function render({ model, el }) {
 
   // ----------------------------------------------------------------------------
@@ -60,6 +63,140 @@ export function render({ model, el }) {
   tooltip.style.display = 'none';
   tooltip.style.zIndex = '100';
   el.appendChild(tooltip);
+
+  // ----------------------------------------------------------------------------
+  // Colorbar
+  //
+  // IMPORTANT: vtkScalarBarActor derives its displayed min/max (the numbers
+  // drawn next to the ticks) from `lookupTable.getRange()`. For a
+  // vtkColorTransferFunction, getRange() is computed from the *positions of
+  // its own RGB control points* - it is NOT affected by setMappingRange(),
+  // which only rescales how scalar values map through the LUT for mesh
+  // coloring. That's why the colorbar rendered fine but the range labels
+  // were stuck at whatever the control points were created with (0..1).
+  //
+  // The fix: whenever colorbarMin/Max/scale/colors change, rebuild the
+  // transfer function's control points directly at those positions. This
+  // also gives us a natural hook to support an arbitrary list of colors
+  // instead of the old hardcoded 3-stop blue/green/red ramp.
+  // ----------------------------------------------------------------------------
+
+  const scalarBarActor = vtkScalarBarActor.newInstance();
+  const lookupTable = vtkColorTransferFunction.newInstance();
+  lookupTable.setNanColor([1.0, 1.0, 1.0, 1.0]);
+
+  scalarBarActor.setScalarsToColors(lookupTable);
+
+  // Colorbar state from model
+  let colorbarVisible = model.colorbar_visible !== undefined ? model.colorbar_visible : false;
+  let colorbarScale = model.colorbar_scale !== undefined ? model.colorbar_scale : 'linear';
+  let colorbarMin = model.colorbar_min !== undefined ? model.colorbar_min : 0.0;
+  let colorbarMax = model.colorbar_max !== undefined ? model.colorbar_max : 1.0;
+  // Default colormap (blue -> green -> red), overridable from Python via
+  // `colorbar_colors` as a list of [r, g, b] triples (each channel 0-1).
+  let colorbarColors = model.colorbar_colors !== undefined && model.colorbar_colors !== null
+    ? model.colorbar_colors
+    : [[0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]];
+
+  scalarBarActor.setVisibility(colorbarVisible);
+  scalarBarActor.setAxisLabel('');
+  scalarBarActor.setTickTextStyle({
+  fontColor: '#666666',
+});
+
+  /**
+   * Rebuild the transfer function's control points from scratch, spaced
+   * across [colorbarMin, colorbarMax] (or log-spaced across that range when
+   * colorbarScale === 'log' and the range is strictly positive - vtk.js has
+   * no native log-scale scalar bar, so this approximates it by warping the
+   * *positions* of the color stops rather than their spacing on screen).
+   */
+  function rebuildLookupTable() {
+    lookupTable.removeAllPoints();
+
+    const colors = (colorbarColors && colorbarColors.length >= 2)
+      ? colorbarColors
+      : [[0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]];
+
+    let min = colorbarMin;
+    let max = colorbarMax;
+
+    // vtk.js's ColorTransferFunction interpolation assumes strictly
+    // increasing, distinct control-point positions. A zero/negative/NaN
+    // span (e.g. a constant field where min === max, or bad input)
+    // collapses every color stop onto the same x value, which crashes the
+    // lookup with "Unexpected case in interpolateData" on every sample
+    // along the bar. Fall back to a tiny synthetic span in that case.
+    if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) {
+      const base = Number.isFinite(min) ? min : 0;
+      min = base;
+      max = base + 1;
+    }
+
+    const span = max - min;
+    const n = colors.length;
+    const useLog = colorbarScale === 'log' && min > 0 && max > 0;
+    const logMin = useLog ? Math.log10(min) : 0;
+    const logMax = useLog ? Math.log10(max) : 0;
+
+    // Minimum separation enforced between consecutive control points, so
+    // floating-point rounding (e.g. a very small span with many colors)
+    // can never produce two stops at an identical x - same crash, sneakier
+    // cause.
+    const minStep = span > 0 ? span * 1e-6 : 1e-6;
+
+    let lastValue = -Infinity;
+    colors.forEach((rgb, i) => {
+      const t = n === 1 ? 0 : i / (n - 1);
+      let value = useLog
+        ? Math.pow(10, logMin + t * (logMax - logMin))
+        : min + t * span;
+
+      if (value <= lastValue) {
+        value = lastValue + minStep;
+      }
+      lastValue = value;
+
+      lookupTable.addRGBPoint(value, rgb[0], rgb[1], rgb[2]);
+    });
+
+    lookupTable.updateRange();
+  }
+
+  function updateColorbarRange() {
+    rebuildLookupTable();
+  }
+
+  function setColorbarVisible(visible) {
+    colorbarVisible = visible;
+    scalarBarActor.setVisibility(visible);
+    renderWindow.render();
+  }
+
+  function setColorbarScale(scale) {
+    colorbarScale = scale;
+    rebuildLookupTable();
+    renderWindow.render();
+  }
+
+  function setColorbarRange(min, max) {
+    colorbarMin = min;
+    colorbarMax = max;
+    rebuildLookupTable();
+    renderWindow.render();
+  }
+
+  function setColorbarColors(colors) {
+    colorbarColors = colors;
+    rebuildLookupTable();
+    renderWindow.render();
+  }
+
+  // Add scalar bar actor to renderer
+  renderer.addActor(scalarBarActor);
+
+  // Initialize colorbar range/colors
+  rebuildLookupTable();
 
   // ----------------------------------------------------------------------------
   // Clip Plane and Widget
@@ -1046,12 +1183,21 @@ function applyHighlight(dataset, cellId, cellValue, groupKey) {
     setEnabled: setClipEnabled,
     setPlaneVisible: setPlaneWidgetVisible,
     setEdgesVisible: setEdgesVisible,
+    setColorbarVisible: setColorbarVisible,
+    setColorbarScale: setColorbarScale,
+    setColorbarRange: setColorbarRange,
+    setColorbarColors: setColorbarColors,
     move: moveClipPlane,
     setAxis: setClipAxis,
     getState: () => ({
       enabled: clipEnabled,
       planeVisible: planeEnabled,
       edgesVisible: edgesVisible,
+      colorbarVisible: colorbarVisible,
+      colorbarScale: colorbarScale,
+      colorbarMin: colorbarMin,
+      colorbarMax: colorbarMax,
+      colorbarColors: colorbarColors,
       origin: [...clipOrigin],
       normal: [...clipNormal],
     }),
@@ -1247,6 +1393,31 @@ function applyHighlight(dataset, cellId, cellValue, groupKey) {
     renderUpdate(false);
   });
 
+  model.on("change:colorbar_visible", () => {
+    setColorbarVisible(model.colorbar_visible);
+    renderUpdate(false);
+  });
+
+  model.on("change:colorbar_scale", () => {
+    setColorbarScale(model.colorbar_scale);
+    renderUpdate(false);
+  });
+
+  model.on("change:colorbar_min", () => {
+    setColorbarRange(model.colorbar_min, colorbarMax);
+    renderUpdate(false);
+  });
+
+  model.on("change:colorbar_max", () => {
+    setColorbarRange(colorbarMin, model.colorbar_max);
+    renderUpdate(false);
+  });
+
+  model.on("change:colorbar_colors", () => {
+    setColorbarColors(model.colorbar_colors);
+    renderUpdate(false);
+  });
+
   // ----------------------------------------------------------------------------
   // Resize handling
   // ----------------------------------------------------------------------------
@@ -1269,7 +1440,15 @@ function applyHighlight(dataset, cellId, cellValue, groupKey) {
     model.off?.('change:geometry', updateGeometry);
     model.off?.('change:colors', updateScalars);
     model.off?.('change:info', onInfoChange);
+    model.off?.('change:colorbar_visible', setColorbarVisible);
+    model.off?.('change:colorbar_scale', setColorbarScale);
+    model.off?.('change:colorbar_min', setColorbarRange);
+    model.off?.('change:colorbar_max', setColorbarRange);
+    model.off?.('change:colorbar_colors', setColorbarColors);
     tooltip.remove();
+    renderer.removeActor(scalarBarActor);
+    scalarBarActor.delete();
+    lookupTable.delete();
     widgetManager.delete();
     genericRenderWindow.delete();
   };

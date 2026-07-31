@@ -396,6 +396,29 @@ class ExamplePanel(param.Parameterized):
             value=True,
             sizing_mode="stretch_width",
         )
+        
+        # Colorbar controls
+        self.colorbar_visible = pmui.Checkbox(
+            label="Show Colorbar",
+            value=False,
+            sizing_mode="stretch_width",
+        )
+        self.colorbar_scale = pmui.Select(
+            label="Colorbar Scale",
+            options=["linear", "log"],
+            value="linear",
+            sizing_mode="stretch_width",
+        )
+        self.colorbar_min = pmui.FloatInput(
+            label="Colorbar Min",
+            value=0.0,
+            sizing_mode="stretch_width",
+        )
+        self.colorbar_max = pmui.FloatInput(
+            label="Colorbar Max",
+            value=1.0,
+            sizing_mode="stretch_width",
+        )
 
         self.theta_slider.param.watch(self._update_vtp_data, "value")
         self.phi_slider.param.watch(self._update_vtp_data, "value")
@@ -406,6 +429,10 @@ class ExamplePanel(param.Parameterized):
         self.clip_enabled.param.watch(self._update_clip_enabled, "value")
         self.clip_axis_select.param.watch(self._update_clip_axis, "value")
         self.edges_visible.param.watch(self._update_edges_visible, "value")
+        self.colorbar_visible.param.watch(self._update_colorbar_visible, "value")
+        self.colorbar_scale.param.watch(self._update_colorbar_scale, "value")
+        self.colorbar_min.param.watch(self._update_colorbar_range, "value")
+        self.colorbar_max.param.watch(self._update_colorbar_range, "value")
 
         self.poly = create_sliced_sphere(
             theta_count=self.theta_slider.value,
@@ -426,6 +453,9 @@ class ExamplePanel(param.Parameterized):
 
         self.vtk_view = VTKPlotter(sizing_mode="stretch_both")
         self.vtk_view.update_polydata(self.poly)
+        
+        # Initialize colorbar from current geometry data
+        self._update_colorbar_from_data()
 
         self.vtk_view.param.watch(self.update_description, "hover_cell_id")
         self.vtk_view.param.watch(self.update_description, "hover_cell_value")
@@ -517,6 +547,12 @@ class ExamplePanel(param.Parameterized):
                 self.clip_enabled,
                 self.clip_axis_select,
                 self.edges_visible,
+                
+                self.colorbar_visible,
+                self.colorbar_scale,
+                self.colorbar_min,
+                self.colorbar_max,
+                
                 self.description_clip,
 
                 self.display_info,
@@ -564,6 +600,37 @@ class ExamplePanel(param.Parameterized):
 
         self.poly = mesh
         self.vtk_view.update_polydata(mesh)
+        
+        # Update colorbar colors and range from the new geometry data
+        self._update_colorbar_from_data()
+
+    def _update_colorbar_from_data(self):
+        """
+        Update colorbar range and colors from current cell data.
+        
+        Extracts the min/max of 'cell_value' from the current geometry and 
+        updates the VTKPlotter's colorbar_min, colorbar_max, and colorbar_colors 
+        parameters to match. Also syncs the UI inputs.
+        """
+        if hasattr(self, 'poly') and self.poly is not None:
+            if "cell_value" in self.poly.cell_data:
+                cell_value = self.poly["cell_value"]
+                vmin = float(cell_value.min())
+                vmax = float(cell_value.max())
+                
+                # Update colorbar range
+                self.vtk_view.colorbar_min = vmin
+                self.vtk_view.colorbar_max = vmax
+                self.colorbar_min.value = vmin
+                self.colorbar_max.value = vmax
+            
+            # Update colorbar colors from colormap
+            cmap_obj = plt.get_cmap(self.cmap_select.value)
+            # Sample 100 colors from the colormap
+            num_colors = 100
+            normalized_colors = cmap_obj(np.linspace(0, 1, num_colors))
+            # Convert to RGB lists (drop alpha channel)
+            self.vtk_view.colorbar_colors = normalized_colors[:, :3].tolist()
 
     def _update_color(self, event=None):
         """
@@ -571,6 +638,7 @@ class ExamplePanel(param.Parameterized):
         
         Applies the selected colormap to the current geometry by calling 
         set_color() and updates the VTKPlotter widget with new color data.
+        Also updates the colorbar colors and range from the data.
         
         Parameters
         ----------
@@ -580,6 +648,9 @@ class ExamplePanel(param.Parameterized):
         print("Updating VTKPlotter colors...")
         set_color(self.poly, cmap=self.cmap_select.value)
         self.vtk_view.update_colors(self.poly)
+        
+        # Update colorbar colors and range from the updated data
+        self._update_colorbar_from_data()
 
     def _update_info_display(self, event=None):
         """
@@ -652,6 +723,51 @@ class ExamplePanel(param.Parameterized):
             Parameter change event (unused, for watch callback compatibility).
         """
         self.vtk_view.edges_visible = self.edges_visible.value
+        
+    def _update_colorbar_visible(self, event=None):
+        """
+        Toggle colorbar display visibility.
+        
+        Syncs the colorbar_visible checkbox state to the VTKPlotter's colorbar_visible 
+        parameter.
+        
+        Parameters
+        ----------
+        event : param.parameterized.Event, optional
+            Parameter change event (unused, for watch callback compatibility).
+        """
+        self.vtk_view.colorbar_visible = self.colorbar_visible.value
+        
+    def _update_colorbar_scale(self, event=None):
+        """
+        Update colorbar scale (linear/log).
+        
+        Syncs the colorbar_scale select state to the VTKPlotter's colorbar_scale 
+        parameter.
+        
+        Parameters
+        ----------
+        event : param.parameterized.Event, optional
+            Parameter change event (unused, for watch callback compatibility).
+        """
+        self.vtk_view.colorbar_scale = self.colorbar_scale.value
+        
+    def _update_colorbar_range(self, event=None):
+        """
+        Update colorbar value range.
+        
+        Syncs the colorbar min/max input values to the VTKPlotter's colorbar_min 
+        and colorbar_max parameters.
+        
+        Parameters
+        ----------
+        event : param.parameterized.Event, optional
+            Parameter change event (unused, for watch callback compatibility).
+        """
+        self.vtk_view.set_colorbar_range(
+            vmin=self.colorbar_min.value,
+            vmax=self.colorbar_max.value
+        )
         
     def _update_clip_position(self, event=None):
         """

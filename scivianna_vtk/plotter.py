@@ -310,6 +310,18 @@ class VTKPlotter(JSComponent):
         Show/hide the plane visualization overlay. Default is False.
     edges_visible : bool, optional
         Show/hide feature edges. Default is True.
+    colorbar_visible : bool, optional
+        Show/hide colorbar. Default is False.
+    colorbar_scale : str, optional
+        Colorbar scale: 'linear' or 'log'. Default is 'linear'.
+    colorbar_min : float, optional
+        Colorbar minimum value. Default is 0.0.
+    colorbar_max : float, optional
+        Colorbar maximum value. Default is 1.0.
+    colorbar_colors : list of [float, float, float], optional
+        List of RGB triples (each channel 0-1) defining the colorbar's
+        colormap, evenly distributed across [colorbar_min, colorbar_max].
+        Default is a 3-stop blue -> green -> red ramp.
     
     Attributes
     ----------
@@ -360,6 +372,21 @@ class VTKPlotter(JSComponent):
     plane_visible = param.Boolean(default=False, doc="Plane visualization visible")
 
     edges_visible = param.Boolean(default=True, doc="Show/hide feature edges")
+
+    # Colorbar parameters
+    colorbar_visible = param.Boolean(default=False, doc="Show/hide colorbar")
+    colorbar_scale = param.Selector(default="linear", objects=["linear", "log"], doc="Colorbar scale: 'linear' or 'log'")
+    colorbar_min = param.Number(default=0.0, doc="Colorbar minimum value")
+    colorbar_max = param.Number(default=1.0, doc="Colorbar maximum value")
+    colorbar_colors = param.List(
+        default=[[0.0, 0.0, 1.0], [0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+        doc=(
+            "List of [r, g, b] colors (each channel in 0-1) defining the "
+            "colorbar's colormap. The colors are evenly distributed across "
+            "[colorbar_min, colorbar_max] (or log-spaced across that range "
+            "when colorbar_scale == 'log'). Needs at least 2 colors."
+        ),
+    )
 
     clicks = param.Integer(default=0, doc="Number of clicks on the plotter")
 
@@ -557,6 +584,103 @@ class VTKPlotter(JSComponent):
             Clip plane normal as [x, y, z].
         """
         return self.clip_normal
+
+    # -------------------------------------------------------------------------
+    # Colorbar Control Methods
+    # -------------------------------------------------------------------------
+
+    def set_colorbar_enabled(self, enabled: bool):
+        """
+        Enable or disable the colorbar display.
+        
+        Parameters
+        ----------
+        enabled : bool
+            Whether to show the colorbar.
+        """
+        if self.colorbar_visible != enabled:
+            self.colorbar_visible = enabled
+
+    def set_colorbar_scale(self, scale: str):
+        """
+        Set colorbar scale to linear or log.
+        
+        Parameters
+        ----------
+        scale : {'linear', 'log'}
+            Scale type for the colorbar.
+        """
+        if scale not in ('linear', 'log'):
+            raise ValueError("scale must be 'linear' or 'log'")
+        if self.colorbar_scale != scale:
+            self.colorbar_scale = scale
+
+    def set_colorbar_range(self, vmin: float = None, vmax: float = None):
+        """
+        Set colorbar value range.
+        
+        Parameters
+        ----------
+        vmin : float, optional
+            Minimum value. If None, keeps current minimum.
+        vmax : float, optional
+            Maximum value. If None, keeps current maximum.
+        """
+        if vmin is not None:
+            self.colorbar_min = vmin
+        if vmax is not None:
+            self.colorbar_max = vmax
+
+    def set_colorbar_colors(self, colors):
+        """
+        Set the list of colors used to build the colorbar's colormap.
+
+        The colors are distributed evenly across [colorbar_min,
+        colorbar_max] (or log-spaced across that range when
+        colorbar_scale == 'log'). Requires at least two colors.
+
+        Parameters
+        ----------
+        colors : list of [float, float, float]
+            List of RGB triples, each channel in [0, 1].
+
+        Examples
+        --------
+        >>> # blue -> white -> red diverging colormap
+        >>> plotter.set_colorbar_colors([[0, 0, 1], [1, 1, 1], [1, 0, 0]])
+        >>> # simple grayscale ramp
+        >>> plotter.set_colorbar_colors([[0, 0, 0], [1, 1, 1]])
+        """
+        colors = [list(c) for c in colors]
+        if len(colors) < 2:
+            raise ValueError("colorbar_colors needs at least 2 colors")
+        for c in colors:
+            if len(c) != 3:
+                raise ValueError("each color must be an [r, g, b] triple")
+        self.colorbar_colors = colors
+
+    @property
+    def colorbar_state(self) -> dict:
+        """
+        Get current colorbar state as a dictionary.
+        
+        Returns
+        -------
+        dict
+            Dictionary with keys:
+            - 'visible' (bool): Whether colorbar is shown.
+            - 'scale' (str): Scale type ('linear' or 'log').
+            - 'min' (float): Minimum value.
+            - 'max' (float): Maximum value.
+            - 'colors' (list): List of [r, g, b] colormap stops.
+        """
+        return {
+            'visible': self.colorbar_visible,
+            'scale': self.colorbar_scale,
+            'min': self.colorbar_min,
+            'max': self.colorbar_max,
+            'colors': self.colorbar_colors,
+        }
 
     def _convert_mesh(self, mesh):
         """

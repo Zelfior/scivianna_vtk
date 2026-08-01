@@ -396,6 +396,11 @@ class ExamplePanel(param.Parameterized):
             value=True,
             sizing_mode="stretch_width",
         )
+        self.view_2d_mode = pmui.Checkbox(
+            label="2D Top View (XY plane)",
+            value=False,
+            sizing_mode="stretch_width",
+        )
         
         # Colorbar controls
         self.colorbar_visible = pmui.Checkbox(
@@ -433,7 +438,8 @@ class ExamplePanel(param.Parameterized):
         self.colorbar_scale.param.watch(self._update_colorbar_scale, "value")
         self.colorbar_min.param.watch(self._update_colorbar_range, "value")
         self.colorbar_max.param.watch(self._update_colorbar_range, "value")
-
+        self.view_2d_mode.param.watch(self._update_view_2d_mode, "value")
+        
         self.poly = create_sliced_sphere(
             theta_count=self.theta_slider.value,
             phi_count=self.phi_slider.value,
@@ -466,6 +472,10 @@ class ExamplePanel(param.Parameterized):
         
         # Initialize clip plane from model after first geometry update
         self._init_clip_plane()
+
+        # Initialize clip controls visibility based on 2D mode state
+        self._update_clip_controls_visibility()
+
 
     def _init_clip_plane(self):
         """
@@ -542,18 +552,20 @@ class ExamplePanel(param.Parameterized):
                 self.theta_slider,
                 self.phi_slider,
                 self.cmap_select,
+                
+                self.view_2d_mode,
 
                 self.plane_enabled,
                 self.clip_enabled,
                 self.clip_axis_select,
+                self.description_clip,
+                
                 self.edges_visible,
                 
                 self.colorbar_visible,
                 self.colorbar_scale,
                 self.colorbar_min,
                 self.colorbar_max,
-                
-                self.description_clip,
 
                 self.display_info,
                 self.description,
@@ -768,6 +780,37 @@ class ExamplePanel(param.Parameterized):
             vmin=self.colorbar_min.value,
             vmax=self.colorbar_max.value
         )
+        
+    def _update_clip_controls_visibility(self):
+        """
+        Show/hide clip-related controls based on 2D mode state.
+        
+        Clip plane features are not meaningful in 2D mode, so we hide
+        the related UI controls when 2D mode is enabled.
+        """
+        is_2d = self.view_2d_mode.value
+        # Hide clip controls in 2D mode
+        self.plane_enabled.visible = not is_2d
+        self.clip_enabled.visible = not is_2d
+        self.clip_axis_select.visible = not is_2d
+        self.description_clip.visible = not is_2d
+        
+    def _update_view_2d_mode(self, event=None):
+        """
+        Toggle 2D top-down view mode.
+        
+        Syncs the view_2d_mode checkbox state to the VTKPlotter's view_2d_mode 
+        parameter. When enabled, the view switches to parallel projection looking 
+        down the Z axis (XY plane), and rotation is disabled.
+        Clip plane controls are hidden in 2D mode as they are not meaningful.
+        
+        Parameters
+        ----------
+        event : param.parameterized.Event, optional
+            Parameter change event (unused, for watch callback compatibility).
+        """
+        self.vtk_view.set_view_2d_mode(self.view_2d_mode.value)
+        self._update_clip_controls_visibility()
         
     def _update_clip_position(self, event=None):
         """

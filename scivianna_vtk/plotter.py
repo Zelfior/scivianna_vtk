@@ -388,6 +388,8 @@ class VTKPlotter(JSComponent):
         ),
     )
 
+    view_2d_mode = param.Boolean(default=False, doc="Enable 2D top-down view mode (parallel projection, rotation disabled)")
+
     clicks = param.Integer(default=0, doc="Number of clicks on the plotter")
 
     # _importmap = {
@@ -659,6 +661,28 @@ class VTKPlotter(JSComponent):
                 raise ValueError("each color must be an [r, g, b] triple")
         self.colorbar_colors = colors
 
+    def set_view_2d_mode(self, enabled: bool):
+        """
+        Enable or disable 2D top-down view mode.
+        
+        When enabled:
+        - Camera uses parallel projection (orthographic view)
+        - View is locked to top-down (looking from +Z)
+        - Rotation is disabled, but panning and zooming still work
+        
+        Parameters
+        ----------
+        enabled : bool
+            Whether to enable 2D mode.
+        
+        Examples
+        --------
+        >>> plotter.set_view_2d_mode(True)   # Enable 2D mode
+        >>> plotter.set_view_2d_mode(False)  # Return to 3D mode
+        """
+        if self.view_2d_mode != enabled:
+            self.view_2d_mode = enabled
+
     @property
     def colorbar_state(self) -> dict:
         """
@@ -681,6 +705,18 @@ class VTKPlotter(JSComponent):
             'max': self.colorbar_max,
             'colors': self.colorbar_colors,
         }
+
+    @property
+    def view_2d_mode_state(self) -> bool:
+        """
+        Get current 2D view mode state.
+        
+        Returns
+        -------
+        bool
+            True if 2D mode is enabled, False otherwise.
+        """
+        return self.view_2d_mode
 
     def _convert_mesh(self, mesh):
         """

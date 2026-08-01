@@ -20,6 +20,10 @@ import vtkWidgetManager from '@kitware/vtk.js/Widgets/Core/WidgetManager';
 import vtkScalarBarActor from '@kitware/vtk.js/Rendering/Core/ScalarBarActor';
 import vtkColorTransferFunction from '@kitware/vtk.js/Rendering/Core/ColorTransferFunction';
 
+import vtkInteractorStyleManipulator from '@kitware/vtk.js/Interaction/Style/InteractorStyleManipulator';
+import vtkMouseCameraTrackballPanManipulator from '@kitware/vtk.js/Interaction/Manipulators/MouseCameraTrackballPanManipulator';
+import vtkMouseCameraTrackballZoomManipulator from '@kitware/vtk.js/Interaction/Manipulators/MouseCameraTrackballZoomManipulator';
+
 export function render({ model, el }) {
 
   // ----------------------------------------------------------------------------
@@ -38,13 +42,43 @@ export function render({ model, el }) {
 
   const renderer = genericRenderWindow.getRenderer();
   const renderWindow = genericRenderWindow.getRenderWindow();
+  const interactor = renderWindow.getInteractor();
   // The real OpenGL render window - used to translate CSS mouse coordinates
   // into the framebuffer's actual pixel space (see onMouseMove / picking
   // fix below). Its size can differ from el.getBoundingClientRect() by
   // window.devicePixelRatio on hi-DPI displays.
   const openGLRenderWindow = genericRenderWindow.getApiSpecificRenderWindow();
 
+  // ----------------------------------------------------------------------------
+  // Interactor Styles Setup
+  // ----------------------------------------------------------------------------
+  // Keep reference to default style (rotate + pan + zoom) for 3D mode
+  const defaultInteractorStyle = interactor.getInteractorStyle();
+
+  // 2D mode style: pan + zoom only, no rotate manipulator
+  const panZoomInteractorStyle = vtkInteractorStyleManipulator.newInstance();
+  panZoomInteractorStyle.addMouseManipulator(
+    vtkMouseCameraTrackballPanManipulator.newInstance({ button: 1 }) // left-drag = pan
+  );
+  panZoomInteractorStyle.addMouseManipulator(
+    vtkMouseCameraTrackballPanManipulator.newInstance({ button: 2 }) // middle-drag = pan
+  );
+  panZoomInteractorStyle.addMouseManipulator(
+    vtkMouseCameraTrackballZoomManipulator.newInstance({ button: 3 }) // right-drag = zoom
+  );
+  panZoomInteractorStyle.addMouseManipulator(
+    vtkMouseCameraTrackballZoomManipulator.newInstance({ scrollEnabled: true }) // wheel = zoom
+  );
+
   renderer.setBackground(1, 1, 1);
+
+  // ----------------------------------------------------------------------------
+  // 2D Mode State
+  // ----------------------------------------------------------------------------
+  // When enabled: parallel projection, top-down view, rotation disabled
+  // Panning and zooming remain functional
+  let is2DMode = model.view_2d_mode !== undefined ? model.view_2d_mode : false;
+  let savedCameraState = null; // Store camera state when entering 2D mode
 
   // ----------------------------------------------------------------------------
   // Tooltip
@@ -975,6 +1009,76 @@ export function render({ model, el }) {
   }
 
   // ----------------------------------------------------------------------------
+  // 2D Mode Control
+  // ----------------------------------------------------------------------------
+
+  const camera = renderer.getActiveCamera();
+
+  function apply2DView() {
+    // Store current camera state if not already stored
+    if (!savedCameraState) {
+      savedCameraState = {
+        position: camera.getPosition(),
+        focalPoint: camera.getFocalPoint(),
+        viewUp: camera.getViewUp(),
+        parallelProjection: camera.getParallelProjection(),
+        parallelScale: camera.getParallelScale(),
+      };
+    }
+
+    // Get bounds to compute appropriate view
+    const bounds = polyData.getBounds();
+    const center = [
+      (bounds[0] + bounds[1]) / 2,
+      (bounds[2] + bounds[3]) / 2,
+      (bounds[4] + bounds[5]) / 2,
+    ];
+
+    // Calculate appropriate distance based on bounds
+    const xSize = bounds[1] - bounds[0];
+    const ySize = bounds[3] - bounds[2];
+    const zSize = bounds[5] - bounds[4];
+    const maxXYSize = Math.max(xSize, ySize, 1);
+
+    // Set top-down view (looking from +Z down to -Z)
+    camera.setParallelProjection(true);
+    camera.setParallelScale(maxXYSize / 2);
+    camera.setFocalPoint(center[0], center[1], center[2]);
+    camera.setPosition(center[0], center[1], center[2] + maxXYSize * 2);
+    camera.setViewUp(0, -1, 0); // Y-down for typical 2D view
+    camera.setDistance(maxXYSize * 2);
+
+    // Reset clipping range for parallel projection
+    renderer.resetCameraClippingRange();
+  }
+
+  function restore3DView() {
+    if (savedCameraState) {
+      camera.setPosition(...savedCameraState.position);
+      camera.setFocalPoint(...savedCameraState.focalPoint);
+      camera.setViewUp(...savedCameraState.viewUp);
+      camera.setParallelProjection(savedCameraState.parallelProjection);
+      camera.setParallelScale(savedCameraState.parallelScale);
+      savedCameraState = null;
+    }
+  }
+
+  function set2DMode(enabled) {
+    is2DMode = enabled;
+    
+    if (enabled) {
+      apply2DView();
+      // Switch to pan/zoom only interactor style (no rotate manipulator)
+      interactor.setInteractorStyle(panZoomInteractorStyle);
+    } else {
+      restore3DView();
+      // Restore default interactor style with rotation
+      interactor.setInteractorStyle(defaultInteractorStyle);
+    }
+    renderWindow.render();
+  }
+
+  // ----------------------------------------------------------------------------
   // Initial load
   // ----------------------------------------------------------------------------
   updateGeometry(model.geometry);
@@ -1189,6 +1293,7 @@ function applyHighlight(dataset, cellId, cellValue, groupKey) {
     setColorbarColors: setColorbarColors,
     move: moveClipPlane,
     setAxis: setClipAxis,
+    set2DMode: set2DMode,
     getState: () => ({
       enabled: clipEnabled,
       planeVisible: planeEnabled,
@@ -1200,7 +1305,15 @@ function applyHighlight(dataset, cellId, cellValue, groupKey) {
       colorbarColors: colorbarColors,
       origin: [...clipOrigin],
       normal: [...clipNormal],
+      is2DMode: is2DMode,
     }),
+  };
+
+  // Wrap set2DMode to sync after changes
+  const originalSet2DMode = set2DMode;
+  set2DMode = (enabled) => {
+    originalSet2DMode(enabled);
+    model.view_2d_mode = enabled;
   };
 
   // ----------------------------------------------------------------------------
@@ -1418,6 +1531,10 @@ function applyHighlight(dataset, cellId, cellValue, groupKey) {
     renderUpdate(false);
   });
 
+  model.on("change:view_2d_mode", () => {
+    set2DMode(model.view_2d_mode);
+  });
+
   // ----------------------------------------------------------------------------
   // Resize handling
   // ----------------------------------------------------------------------------
@@ -1445,6 +1562,7 @@ function applyHighlight(dataset, cellId, cellValue, groupKey) {
     model.off?.('change:colorbar_min', setColorbarRange);
     model.off?.('change:colorbar_max', setColorbarRange);
     model.off?.('change:colorbar_colors', setColorbarColors);
+    model.off?.('change:view_2d_mode', set2DMode);
     tooltip.remove();
     renderer.removeActor(scalarBarActor);
     scalarBarActor.delete();

@@ -1090,6 +1090,10 @@ export function render({ model, el }) {
 
   refreshMainEdges();
   refreshClipEdges();
+  
+  if (is2DMode) {
+    set2DMode(true);
+  }
 
   // ----------------------------------------------------------------------------
   // Hover picking + hover cell highlight

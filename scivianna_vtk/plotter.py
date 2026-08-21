@@ -11,14 +11,14 @@ import pyvista as pv
 def _pack(arr: np.ndarray, dtype) -> bytes:
     """
     Pack a numpy array into bytes with the specified dtype.
-    
+
     Parameters
     ----------
     arr : np.ndarray
         Input numpy array to pack.
     dtype : type
         NumPy dtype for casting (e.g., np.float32).
-    
+
     Returns
     -------
     bytes
@@ -30,14 +30,14 @@ def _pack(arr: np.ndarray, dtype) -> bytes:
 def _pyvista_to_numpy(vtk_array) -> np.ndarray:
     """
     Convert a VTK array to a numpy array.
-    
+
     Works with pyvista's underlying VTK arrays by using vtk.util.numpy_support.
-    
+
     Parameters
     ----------
     vtk_array : vtkArray
         VTK array to convert.
-    
+
     Returns
     -------
     np.ndarray
@@ -46,6 +46,73 @@ def _pyvista_to_numpy(vtk_array) -> np.ndarray:
     import vtk.util.numpy_support as vtk_np
     return vtk_np.vtk_to_numpy(vtk_array)
 
+
+def _is_string_array(vtk_array) -> bool:
+    """
+    Check if a VTK array is a string array (VTK_STRING type).
+
+    Parameters
+    ----------
+    vtk_array : vtkArray
+        VTK array to check.
+
+    Returns
+    -------
+    bool
+        True if the array stores strings, False otherwise.
+    """
+    from vtk import VTK_STRING
+    return vtk_array.GetDataType() == VTK_STRING
+
+
+def _extract_string_values(vtk_array) -> dict:
+    """
+    Extract string values from a VTK string array and encode them as
+    null-padded fixed-width UTF-8 bytes.
+
+    Parameters
+    ----------
+    vtk_array : vtkStringArray
+        VTK string array to extract from.
+
+    Returns
+    -------
+    dict
+        Dictionary with keys:
+            - 'buffer': bytes of the null-padded UTF-8 encoded strings
+            - 'numTuples': number of string elements
+            - 'stringLength': fixed byte width per string (including null terminator)
+    """
+    num_tuples = vtk_array.GetNumberOfTuples()
+    if num_tuples == 0:
+        return {
+            "buffer": b"",
+            "numTuples": 0,
+            "stringLength": 0,
+        }
+
+    # Find the maximum string length to determine fixed width
+    max_len = 0
+    values = []
+    for i in range(num_tuples):
+        val = vtk_array.GetValue(i)
+        encoded = val.encode("utf-8") if val is not None else b""
+        values.append(encoded)
+        if len(encoded) > max_len:
+            max_len = len(encoded)
+
+    # Fixed width = max content length + 1 for null terminator
+    string_length = max_len + 1
+    buffer = b""
+    for encoded in values:
+        buffer += encoded.ljust(string_length, b"\x00")
+
+    return {
+        "buffer": buffer,
+        "numTuples": num_tuples,
+        "stringLength": string_length,
+    }
+
 # =============================================================================
 # VTK 9.6+ SAFE CELL EXTRACTION
 # =============================================================================
@@ -53,20 +120,20 @@ def _pyvista_to_numpy(vtk_array) -> np.ndarray:
 def extract_cell_stream(cell) -> dict:
     """
     Convert VTK cell array (polys/lines/verts) into vtk.js-compatible binary stream.
-    
+
     Uses the modern VTK API methods GetOffsetsArray() and GetConnectivityArray()
     to extract cell topology data in a format compatible with vtk.js.
-    
+
     Parameters
     ----------
     cell : vtkCellArray or None
         VTK cell array containing polygon, line, or vertex data.
-    
+
     Returns
     -------
     dict or None
-        Dictionary with 'buffer' key containing bytes of the stream, or None 
-        if input is None. The stream format is: [num_cells, p0, p1, ..., pN] 
+        Dictionary with 'buffer' key containing bytes of the stream, or None
+        if input is None. The stream format is: [num_cells, p0, p1, ..., pN]
         for each cell where num_cells is the number of points in the cell.
     """
 
@@ -101,22 +168,22 @@ def extract_cell_stream(cell) -> dict:
 def polydata_to_dict(poly: pv.PolyData) -> dict:
     """
     Convert pyvista.PolyData to a vtk.js-friendly binary dictionary structure.
-    
-    Extracts points, topology (polys, lines, verts, strips), and both point 
+
+    Extracts points, topology (polys, lines, verts, strips), and both point
     and cell data from the PolyData, converting them to binary buffers suitable
     for transmission to vtk.js via Panel's JSComponent interface.
-    
+
     Parameters
     ----------
     poly : pv.PolyData
-        PyVista PolyData object. Note: pyvista.PolyData is a subclass of 
+        PyVista PolyData object. Note: pyvista.PolyData is a subclass of
         vtkPolyData, so the VTK API is directly compatible.
-    
+
     Returns
     -------
     dict
-        Dictionary with keys: 'points', 'polys', 'lines', 'verts', 'strips', 
-        'pointData', 'cellData'. Each contains binary buffers and metadata 
+        Dictionary with keys: 'points', 'polys', 'lines', 'verts', 'strips',
+        'pointData', 'cellData'. Each contains binary buffers and metadata
         required by vtk.js for rendering.
     """
 
@@ -152,16 +219,26 @@ def polydata_to_dict(poly: pv.PolyData) -> dict:
 
     for i in range(pd.GetNumberOfArrays()):
 
-        arr = pd.GetArray(i)
+        arr = pd.GetAbstractArray(i) if pd.GetAbstractArray(i) is not None else pd.GetArray(i)
         name = arr.GetName()
 
-        np_arr = _pyvista_to_numpy(arr)
+        if _is_string_array(arr):
+            # Handle VTK string arrays separately (vtk_to_numpy doesn't support them)
+            str_info = _extract_string_values(arr)
+            point_data[name] = {
+                "buffer": str_info["buffer"],
+                "numTuples": str_info["numTuples"],
+                "stringLength": str_info["stringLength"],
+                "dtype": "string",
+            }
+        else:
+            np_arr = _pyvista_to_numpy(arr)
 
-        point_data[name] = {
-            "buffer": memoryview(np_arr).tobytes(),
-            "components": arr.GetNumberOfComponents(),
-            "dtype": str(np_arr.dtype),
-        }
+            point_data[name] = {
+                "buffer": memoryview(np_arr).tobytes(),
+                "components": arr.GetNumberOfComponents(),
+                "dtype": str(np_arr.dtype),
+            }
 
     # -------------------------------------------------------------------------
     # CELL DATA
@@ -171,16 +248,27 @@ def polydata_to_dict(poly: pv.PolyData) -> dict:
     cd = poly.GetCellData()
 
     for i in range(cd.GetNumberOfArrays()):
-
-        arr = cd.GetArray(i)
+        arr = cd.GetAbstractArray(i) if cd.GetAbstractArray(i) is not None else cd.GetArray(i)
+        if arr is None:
+            raise ValueError("Returned array is None, VTK backend can only be used with integer/float arrays.")
         name = arr.GetName()
 
-        np_arr = _pyvista_to_numpy(arr)
+        if _is_string_array(arr):
+            # Handle VTK string arrays separately (vtk_to_numpy doesn't support them)
+            str_info = _extract_string_values(arr)
+            cell_data[name] = {
+                "buffer": str_info["buffer"],
+                "numTuples": str_info["numTuples"],
+                "stringLength": str_info["stringLength"],
+                "dtype": "string",
+            }
+        else:
+            np_arr = _pyvista_to_numpy(arr)
 
-        cell_data[name] = {
-            "buffer": _pack(np_arr, np.float32),
-            "components": arr.GetNumberOfComponents(),
-        }
+            cell_data[name] = {
+                "buffer": _pack(np_arr, np.float32),
+                "components": arr.GetNumberOfComponents(),
+            }
 
     return {
         "points": points,
@@ -198,19 +286,19 @@ def polydata_to_dict(poly: pv.PolyData) -> dict:
 def _convert_cells_to_polys(poly: pv.PolyData) -> pv.PolyData:
     """
     Convert cell-based PolyData to polygon surface geometry.
-    
-    For structured grids and other datasets that don't have explicit 
+
+    For structured grids and other datasets that don't have explicit
     polygon primitives, extracts the surface or generates polygons from cells.
-    
+
     Parameters
     ----------
     poly : pv.PolyData
         Input PolyData that may or may not contain polygon primitives.
-    
+
     Returns
     -------
     pv.PolyData
-        PolyData with polygon surface. If input already has polys, returns 
+        PolyData with polygon surface. If input already has polys, returns
         unchanged. Otherwise returns the result of extract_surface().
     """
     # Check if we already have polys
@@ -228,22 +316,22 @@ def _convert_cells_to_polys(poly: pv.PolyData) -> pv.PolyData:
 def unstructured_grid_to_dict(ugrid: pv.UnstructuredGrid) -> dict:
     """
     Convert pyvista.UnstructuredGrid to a vtk.js-friendly binary dictionary structure.
-    
-    For vtk.js compatibility, converts the unstructured grid to PolyData using 
-    vtkDataSetSurfaceFilter, which preserves original cell IDs for proper data 
-    mapping. Point and cell data arrays are remapped from the original grid to 
+
+    For vtk.js compatibility, converts the unstructured grid to PolyData using
+    vtkDataSetSurfaceFilter, which preserves original cell IDs for proper data
+    mapping. Point and cell data arrays are remapped from the original grid to
     the converted PolyData.
-    
+
     Parameters
     ----------
     ugrid : pv.UnstructuredGrid
         PyVista UnstructuredGrid to convert.
-    
+
     Returns
     -------
     dict
-        Dictionary with keys: 'points', 'polys', 'lines', 'verts', 'strips', 
-        'pointData', 'cellData'. Contains binary buffers and metadata for 
+        Dictionary with keys: 'points', 'polys', 'lines', 'verts', 'strips',
+        'pointData', 'cellData'. Contains binary buffers and metadata for
         vtk.js rendering, with cell data properly mapped from the original grid.
     """
     import vtk
@@ -277,12 +365,12 @@ def unstructured_grid_to_dict(ugrid: pv.UnstructuredGrid) -> dict:
 class VTKPlotter(JSComponent):
     """
     Interactive VTK/PyVista plotter component using vtk.js for rendering.
-    
-    A Panel JSComponent that renders 3D geometry server-side converted from 
-    pyvista mesh objects to vtk.js-compatible binary format. Supports hover 
-    interaction for cell identification, clip plane visualization, and plane 
+
+    A Panel JSComponent that renders 3D geometry server-side converted from
+    pyvista mesh objects to vtk.js-compatible binary format. Supports hover
+    interaction for cell identification, clip plane visualization, and plane
     overlay display.
-    
+
     Parameters
     ----------
     geometry : dict, optional
@@ -290,7 +378,7 @@ class VTKPlotter(JSComponent):
     colors : dict, optional
         Binary color data (pointData and cellData) for vtk.js rendering.
     clip_slice : dict or None, optional
-        PolyData of the intersection between clip plane and source mesh, 
+        PolyData of the intersection between clip plane and source mesh,
         used as a data-accurate cap over the vtk.js clip hole.
     info : bool, optional
         Whether to show the info panel. Default is True.
@@ -322,14 +410,14 @@ class VTKPlotter(JSComponent):
         List of RGB triples (each channel 0-1) defining the colorbar's
         colormap, evenly distributed across [colorbar_min, colorbar_max].
         Default is a 3-stop blue -> green -> red ramp.
-    
+
     Attributes
     ----------
     _source_mesh : pv.DataSet or None
         Reference to the actual pyvista dataset currently being displayed.
     _esm : str
         Path to the bundled JavaScript ESM module.
-    
+
     Examples
     --------
     >>> import pyvista as pv
@@ -340,7 +428,6 @@ class VTKPlotter(JSComponent):
     """
 
     geometry = param.Dict()
-    colors = param.Dict()
 
     # The exact intersection of the clip plane with the source mesh,
     # computed in python whenever the clip plane settles (see
@@ -415,11 +502,11 @@ class VTKPlotter(JSComponent):
     def __init__(self, **params):
         """
         Initialize the VTKPlotter component.
-        
-        Sets up parameter watchers for clip plane changes so that the 
-        intersection slice is recomputed whenever the plane origin, normal, 
+
+        Sets up parameter watchers for clip plane changes so that the
+        intersection slice is recomputed whenever the plane origin, normal,
         or enabled state changes.
-        
+
         Parameters
         ----------
         **params : dict
@@ -449,7 +536,7 @@ class VTKPlotter(JSComponent):
     def set_plane_enabled(self, enabled: bool):
         """
         Enable or disable the plane visualization overlay.
-        
+
         Parameters
         ----------
         enabled : bool
@@ -461,7 +548,7 @@ class VTKPlotter(JSComponent):
     def set_clip_enabled(self, enabled: bool):
         """
         Enable or disable the clip plane visualization.
-        
+
         Parameters
         ----------
         enabled : bool
@@ -474,17 +561,17 @@ class VTKPlotter(JSComponent):
     def set_clip_plane(self, origin=None, normal=None):
         """
         Set clip plane position and orientation.
-        
-        Updates the clip plane origin and/or normal, triggering a 
+
+        Updates the clip plane origin and/or normal, triggering a
         recomputation of the clip slice if clipping is enabled.
-        
+
         Parameters
         ----------
         origin : list of 3 floats, optional
             Plane origin [x, y, z]. If None, keeps current origin.
         normal : list of 3 floats, optional
             Plane normal [x, y, z]. If None, keeps current normal.
-        
+
         Examples
         --------
         >>> plotter.set_clip_plane(origin=[0.5, 0.5, 0.5])
@@ -497,7 +584,7 @@ class VTKPlotter(JSComponent):
                 self.clip_origin
             ).all():
                 self.clip_origin = list(origin)
-                
+
         if normal is not None:
             if np.allclose(normal, self.clip_normal, rtol=1e-4):
                 return
@@ -509,7 +596,7 @@ class VTKPlotter(JSComponent):
     def set_edges_visible(self, visible: bool):
         """
         Enable or disable feature edges visualization.
-        
+
         Parameters
         ----------
         visible : bool
@@ -521,7 +608,7 @@ class VTKPlotter(JSComponent):
     def set_info(self, enabled: bool):
         """
         Enable or disable the info panel.
-        
+
         Parameters
         ----------
         enabled : bool
@@ -533,17 +620,17 @@ class VTKPlotter(JSComponent):
     def set_clip_axis(self, axis: str, sign: int = 1):
         """
         Set clip plane normal to a cardinal direction.
-        
-        Sets the clip plane normal to one of the six cardinal directions 
+
+        Sets the clip plane normal to one of the six cardinal directions
         (±x, ±y, ±z) based on the axis and sign parameters.
-        
+
         Parameters
         ----------
         axis : {'x', 'y', 'z'}
             Axis for the normal direction.
         sign : {1, -1}, optional
             Direction sign. Default is 1 (positive direction).
-        
+
         Examples
         --------
         >>> plotter.set_clip_axis('x')      # Normal: [1, 0, 0]
@@ -560,7 +647,7 @@ class VTKPlotter(JSComponent):
     def clip_plane_state(self) -> dict:
         """
         Get current clip plane state as a dictionary.
-        
+
         Returns
         -------
         dict
@@ -579,7 +666,7 @@ class VTKPlotter(JSComponent):
     def clip_center(self) -> list:
         """
         Get clip plane center (origin).
-        
+
         Returns
         -------
         list
@@ -591,7 +678,7 @@ class VTKPlotter(JSComponent):
     def clip_axes(self) -> list:
         """
         Get clip plane normal vector.
-        
+
         Returns
         -------
         list
@@ -606,7 +693,7 @@ class VTKPlotter(JSComponent):
     def set_colorbar_enabled(self, enabled: bool):
         """
         Enable or disable the colorbar display.
-        
+
         Parameters
         ----------
         enabled : bool
@@ -618,7 +705,7 @@ class VTKPlotter(JSComponent):
     def set_colorbar_scale(self, scale: str):
         """
         Set colorbar scale to linear or log.
-        
+
         Parameters
         ----------
         scale : {'linear', 'log'}
@@ -632,7 +719,7 @@ class VTKPlotter(JSComponent):
     def set_colorbar_range(self, vmin: float = None, vmax: float = None):
         """
         Set colorbar value range.
-        
+
         Parameters
         ----------
         vmin : float, optional
@@ -676,17 +763,17 @@ class VTKPlotter(JSComponent):
     def set_view_2d_mode(self, enabled: bool):
         """
         Enable or disable 2D top-down view mode.
-        
+
         When enabled:
         - Camera uses parallel projection (orthographic view)
         - View is locked to top-down (looking from +Z)
         - Rotation is disabled, but panning and zooming still work
-        
+
         Parameters
         ----------
         enabled : bool
             Whether to enable 2D mode.
-        
+
         Examples
         --------
         >>> plotter.set_view_2d_mode(True)   # Enable 2D mode
@@ -699,7 +786,7 @@ class VTKPlotter(JSComponent):
     def colorbar_state(self) -> dict:
         """
         Get current colorbar state as a dictionary.
-        
+
         Returns
         -------
         dict
@@ -722,7 +809,7 @@ class VTKPlotter(JSComponent):
     def view_2d_mode_state(self) -> bool:
         """
         Get current 2D view mode state.
-        
+
         Returns
         -------
         bool
@@ -733,22 +820,22 @@ class VTKPlotter(JSComponent):
     def _convert_mesh(self, mesh):
         """
         Convert various pyvista mesh types to vtk.js-compatible dictionary format.
-        
+
         Dispatches to the appropriate conversion function based on mesh type:
         - pv.PolyData → polydata_to_dict()
         - pv.UnstructuredGrid / pv.StructuredGrid → unstructured_grid_to_dict()
         - pv.RectilinearGrid / pv.ImageData → extract_surface then polydata_to_dict()
-        
+
         Parameters
         ----------
         mesh : pv.DataSet
             PyVista mesh object to convert.
-        
+
         Returns
         -------
         dict
             Dictionary with binary geometry and color data for vtk.js.
-        
+
         Raises
         ------
         TypeError
@@ -773,19 +860,19 @@ class VTKPlotter(JSComponent):
     # -------------------------------------------------------------------------
     def _recompute_clip_slice(self, *events):
         """
-        Compute the exact intersection between the clip plane and the real 
+        Compute the exact intersection between the clip plane and the real
         source mesh for data-accurate clip cap rendering.
-        
-        Computes the intersection using pyvista's `.slice()` method (not 
-        `.clip()`) to extract only the thin cross-section polygon, not the 
-        full clipped body. This slice is serialized and stored in clip_slice 
-        for the JS side to render as a colored cap over the hole left by 
+
+        Computes the intersection using pyvista's `.slice()` method (not
+        `.clip()`) to extract only the thin cross-section polygon, not the
+        full clipped body. This slice is serialized and stored in clip_slice
+        for the JS side to render as a colored cap over the hole left by
         local vtk.js clipping.
-        
-        Only called when the plane "settles" (mouse release on JS side or 
-        python-side parameter change), not on every drag frame, to avoid 
+
+        Only called when the plane "settles" (mouse release on JS side or
+        python-side parameter change), not on every drag frame, to avoid
         performance issues from repeated slicing and serialization.
-        
+
         Parameters
         ----------
         *events : tuple
@@ -813,7 +900,7 @@ class VTKPlotter(JSComponent):
         if mesh_slice is None or mesh_slice.n_points == 0:
             self.clip_slice = None
             return
-        
+
         d = self._convert_mesh(mesh_slice)
 
         self.clip_slice = {
@@ -831,16 +918,16 @@ class VTKPlotter(JSComponent):
     def update_polydata(self, polydata):
         """
         Update the plotter with new geometry and data.
-        
-        Converts the input pyvista mesh to vtk.js-compatible format and 
+
+        Converts the input pyvista mesh to vtk.js-compatible format and
         stores a reference to the original mesh for clip plane recomputation.
         Invalidates any previously computed clip slice.
-        
+
         Parameters
         ----------
         polydata : pv.DataSet
             PyVista mesh object (PolyData, UnstructuredGrid, etc.).
-        
+
         Examples
         --------
         >>> import pyvista as pv
@@ -860,9 +947,6 @@ class VTKPlotter(JSComponent):
             "lines": d["lines"],
             "verts": d["verts"],
             "strips": d["strips"],
-        }
-
-        self.colors = {
             "pointData": d["pointData"],
             "cellData": d["cellData"],
         }
@@ -874,15 +958,15 @@ class VTKPlotter(JSComponent):
     def update_colors(self, polydata):
         """
         Update only the color data while keeping the same geometry.
-        
-        Re-converts the input mesh to extract updated point and cell data 
+
+        Re-converts the input mesh to extract updated point and cell data
         (colors), storing a reference for clip plane recomputation.
-        
+
         Parameters
         ----------
         polydata : pv.DataSet
             PyVista mesh object with updated color data.
-        
+
         Examples
         --------
         >>> plotter.update_colors(updated_mesh)
@@ -891,9 +975,9 @@ class VTKPlotter(JSComponent):
 
         d = self._convert_mesh(polydata)
 
-        self.colors = {
+        self.geometry = {
+            **self.geometry,
             "pointData": d["pointData"],
             "cellData": d["cellData"],
         }
-
         self._recompute_clip_slice()

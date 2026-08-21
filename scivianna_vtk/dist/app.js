@@ -5,6 +5,7 @@ import vtkGenericRenderWindow from '@kitware/vtk.js/Rendering/Misc/GenericRender
 import vtkPolyData from '@kitware/vtk.js/Common/DataModel/PolyData';
 import vtkPoints from '@kitware/vtk.js/Common/Core/Points';
 import vtkDataArray from '@kitware/vtk.js/Common/Core/DataArray';
+import vtkStringArray from '@kitware/vtk.js/Common/Core/StringArray';
 import vtkCellArray from '@kitware/vtk.js/Common/Core/CellArray';
 
 import vtkActor from '@kitware/vtk.js/Rendering/Core/Actor';
@@ -299,6 +300,22 @@ export function render({ model, el }) {
       default:
         return new Float32Array(buffer);
     }
+  }
+
+  function toStrings(buffer, numTuples, stringLength) {
+    if (!buffer || numTuples === 0 || stringLength === 0) return [];
+    const strings = [];
+    for (let i = 0; i < numTuples; i++) {
+      const start = i * stringLength;
+      let str = '';
+      for (let j = 0; j < stringLength; j++) {
+        const byte = buffer[start + j];
+        if (byte === 0) break; // null terminator
+        str += String.fromCharCode(byte);
+      }
+      strings.push(str);
+    }
+    return strings;
   }
 
   function makeCellArray(cell) {
@@ -810,11 +827,25 @@ export function render({ model, el }) {
     pd.initialize();
 
     Object.entries(data.pointData || {}).forEach(([name, entry], idx) => {
-      const vtkArr = vtkDataArray.newInstance({
-        name,
-        values: toTyped(entry.buffer, entry.dtype),
-        numberOfComponents: entry.components,
-      });
+      let vtkArr;
+      if (entry.dtype === 'string') {
+        const strings = toStrings(
+          new Uint8Array(entry.buffer),
+          entry.numTuples,
+          entry.stringLength
+        );
+        vtkArr = vtkStringArray.newInstance({
+          name,
+          values: strings,
+          numberOfComponents: 1,
+        });
+      } else {
+        vtkArr = vtkDataArray.newInstance({
+          name,
+          values: toTyped(entry.buffer, entry.dtype),
+          numberOfComponents: entry.components,
+        });
+      }
       pd.addArray(vtkArr);
       if (idx === 0) pd.setScalars(vtkArr);
     });
@@ -824,11 +855,25 @@ export function render({ model, el }) {
     cd.initialize();
 
     Object.entries(data.cellData || {}).forEach(([name, entry]) => {
-      const vtkArr = vtkDataArray.newInstance({
-        name,
-        values: toTyped(entry.buffer, entry.dtype),
-        numberOfComponents: entry.components,
-      });
+      let vtkArr;
+      if (entry.dtype === 'string') {
+        const strings = toStrings(
+          new Uint8Array(entry.buffer),
+          entry.numTuples,
+          entry.stringLength
+        );
+        vtkArr = vtkStringArray.newInstance({
+          name,
+          values: strings,
+          numberOfComponents: 1,
+        });
+      } else {
+        vtkArr = vtkDataArray.newInstance({
+          name,
+          values: toTyped(entry.buffer, entry.dtype),
+          numberOfComponents: entry.components,
+        });
+      }
       cd.addArray(vtkArr);
     });
 
@@ -861,11 +906,25 @@ export function render({ model, el }) {
     const pd = capPolyData.getPointData();
     pd.initialize();
     Object.entries(data.pointData || {}).forEach(([name, entry], idx) => {
-      const vtkArr = vtkDataArray.newInstance({
-        name,
-        values: toTyped(entry.buffer, entry.dtype),
-        numberOfComponents: entry.components,
-      });
+      let vtkArr;
+      if (entry.dtype === 'string') {
+        const strings = toStrings(
+          new Uint8Array(entry.buffer),
+          entry.numTuples,
+          entry.stringLength
+        );
+        vtkArr = vtkStringArray.newInstance({
+          name,
+          values: strings,
+          numberOfComponents: 1,
+        });
+      } else {
+        vtkArr = vtkDataArray.newInstance({
+          name,
+          values: toTyped(entry.buffer, entry.dtype),
+          numberOfComponents: entry.components,
+        });
+      }
       pd.addArray(vtkArr);
       if (idx === 0) pd.setScalars(vtkArr);
     });
@@ -873,11 +932,25 @@ export function render({ model, el }) {
     const cd = capPolyData.getCellData();
     cd.initialize();
     Object.entries(data.cellData || {}).forEach(([name, entry]) => {
-      const vtkArr = vtkDataArray.newInstance({
-        name,
-        values: toTyped(entry.buffer, entry.dtype),
-        numberOfComponents: entry.components,
-      });
+      let vtkArr;
+      if (entry.dtype === 'string') {
+        const strings = toStrings(
+          new Uint8Array(entry.buffer),
+          entry.numTuples,
+          entry.stringLength
+        );
+        vtkArr = vtkStringArray.newInstance({
+          name,
+          values: strings,
+          numberOfComponents: 1,
+        });
+      } else {
+        vtkArr = vtkDataArray.newInstance({
+          name,
+          values: toTyped(entry.buffer, entry.dtype),
+          numberOfComponents: entry.components,
+        });
+      }
       cd.addArray(vtkArr);
     });
 
@@ -1084,7 +1157,7 @@ export function render({ model, el }) {
   // Initial load
   // ----------------------------------------------------------------------------
   updateGeometry(model.geometry);
-  updateScalars(model.colors);
+  updateScalars(model.geometry);
   renderUpdate(true);
 
   // Initialize the widget with current geometry (after data is loaded)
@@ -1502,10 +1575,13 @@ function applyHighlight(dataset, cellId, cellValue, groupKey) {
   model.on("change:geometry", () => {
     // The whole pipeline's datasets get rebuilt - any in-progress highlight
     // is now stale.
+    console.log("polys bytes:", model.geometry?.polys?.buffer?.byteLength);
     clearHighlight();
     lastHover = { cellId: -2, cellValue: null, position: [NaN, NaN, NaN], dataset: null };
 
     updateGeometry(model.geometry);
+    updateScalars(model.geometry);
+
     // New geometry invalidates whatever cap slice we had.
     hasCapSlice = false;
     updateCapVisibility();
@@ -1515,16 +1591,6 @@ function applyHighlight(dataset, cellId, cellValue, groupKey) {
     // Re-initialize wzdget bounds when geometry changes
     initializeWidget();
     syncWidgetFromPlane();
-    refreshMainEdges();
-    refreshClipEdges();
-    // Re-render to show updated edges (especially important in 2D mode)
-    renderUpdate(false);
-  });
-
-  model.on("change:colors", () => {
-    clearHighlight();
-    lastHover = { cellId: -2, cellValue: null, position: [NaN, NaN, NaN], dataset: null };
-    updateScalars(model.colors);
     refreshMainEdges();
     refreshClipEdges();
     // Re-render to show updated edges (especially important in 2D mode)
@@ -1592,7 +1658,6 @@ function applyHighlight(dataset, cellId, cellValue, groupKey) {
     el.removeEventListener('mousedown', onMouseDown);
     el.removeEventListener('mouseup', onMouseUp);
     model.off?.('change:geometry', updateGeometry);
-    model.off?.('change:colors', updateScalars);
     model.off?.('change:info', onInfoChange);
     model.off?.('change:colorbar_visible', setColorbarVisible);
     model.off?.('change:colorbar_scale', setColorbarScale);

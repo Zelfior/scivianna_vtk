@@ -669,7 +669,7 @@ export function render({ model, el }) {
   function setEdgesVisible(enabled) {
     const wasVisible = edgesVisible;
     edgesVisible = enabled;
-    
+
     // If turning on and edges are stale, refresh them
     if (enabled && !wasVisible) {
       if (mainEdgesStale) {
@@ -685,7 +685,7 @@ export function render({ model, el }) {
         capEdgesStale = false;
       }
     }
-    
+
     syncEdgeVisibility();
     renderWindow.render();
   }
@@ -798,6 +798,8 @@ export function render({ model, el }) {
 
     polyData.modified();
     clipper.modified();
+
+    refreshMainEdges();
   }
 
   function updateScalars(data) {
@@ -1065,7 +1067,7 @@ export function render({ model, el }) {
 
   function set2DMode(enabled) {
     is2DMode = enabled;
-    
+
     if (enabled) {
       apply2DView();
       // Switch to pan/zoom only interactor style (no rotate manipulator)
@@ -1090,7 +1092,7 @@ export function render({ model, el }) {
 
   refreshMainEdges();
   refreshClipEdges();
-  
+
   if (is2DMode) {
     set2DMode(true);
   }
@@ -1166,9 +1168,37 @@ function applyHighlight(dataset, cellId, cellValue, groupKey) {
   dataset.modified();
 }
   function updateHover(cellId, cellValue, world, dataset = null) {
-  const x = world?.[0] ?? NaN;
-  const y = world?.[1] ?? NaN;
-  const z = world?.[2] ?? NaN;
+  let x = world?.[0] ?? NaN;
+  let y = world?.[1] ?? NaN;
+  let z = world?.[2] ?? NaN;
+
+  // In 2D mode, transform the picked world position into the custom
+  // coordinate system defined by hover_origin + hover_u_vector + hover_v_vector.
+  // Formula: result = x*u + y*v + w*w  where w = hover_origin
+  if (is2DMode && !isNaN(x) && !isNaN(y)) {
+    const u0 = model.hover_u_vector?.[0] ?? 1.0;
+    const u1 = model.hover_u_vector?.[1] ?? 0.0;
+    const u2 = model.hover_u_vector?.[2] ?? 0.0;
+
+    const v0 = model.hover_v_vector?.[0] ?? 0.0;
+    const v1 = model.hover_v_vector?.[1] ?? 1.0;
+    const v2 = model.hover_v_vector?.[2] ?? 0.0;
+
+    const o0 = model.hover_origin?.[0] ?? 0.0;
+    const o1 = model.hover_origin?.[1] ?? 0.0;
+    const o2 = model.hover_origin?.[2] ?? 0.0;
+
+    const w0 = u1 * v2 - u2 * v1;
+    const w1 = u2 * v0 - u0 * v2;
+    const w2 = u0 * v1 - u1 * v0;
+
+    const w_val = o0 * w0 + o1 * w1 + o2 * w2;
+    // Use original x,y for all components (avoid cascading mutation)
+    const ox = x, oy = y;
+    x = ox * u0 + oy * v0 + w_val * w0;
+    y = ox * u1 + oy * v1 + w_val * w1;
+    z = ox * u2 + oy * v2 + w_val * w2;
+  }
 
   if (
     lastHover.cellId === cellId &&
@@ -1178,7 +1208,7 @@ function applyHighlight(dataset, cellId, cellValue, groupKey) {
     lastHover.position[1] === y &&
     lastHover.position[2] === z
   ) {
-    return;
+    return [x, y, z];
   }
 
   const groupKey = computeGroupKey(dataset, cellId, cellValue);
@@ -1195,6 +1225,8 @@ function applyHighlight(dataset, cellId, cellValue, groupKey) {
   model.hover_cell_id = cellId;
   model.hover_cell_value = cellValue ?? -1;
   model.hover_position = [x, y, z];
+
+  return [x, y, z];
 }
 
   function onMouseMove(e) {
@@ -1231,7 +1263,7 @@ function applyHighlight(dataset, cellId, cellValue, groupKey) {
       return;
     }
 
-    const world = picker.getPickPosition();
+    let world = picker.getPickPosition();
 
     // Use the dataset that was actually picked (polyData / clipper output /
     // capPolyData) rather than always reading from the original polyData -
@@ -1246,19 +1278,18 @@ function applyHighlight(dataset, cellId, cellValue, groupKey) {
     const rgbaArray = cellData.getArrayByName('rgba');
     const cellValueArray = cellData.getArrayByName('cell_value');
 
-    
+
     const cellId = cellIdArray ? cellIdArray.getValue(pickedCellId) : 'N/A';
     const cellValue = cellValueArray ? cellValueArray.getValue(pickedCellId) : 'N/A';
     const rgba = rgbaArray ? rgbaArray.getTuple(pickedCellId) : null;
 
-    updateHover(pickedCellId, cellId, world, dataset);
+    world = updateHover(pickedCellId, cellId, world, dataset);
     renderWindow.render();
 
     tooltip.innerHTML = `
       <div><b>cell_id</b>: ${cellId}</div>
       <div><b>cell_value</b>: ${cellValue}</div>
       <div><b>xyz</b>: ${world.map(v => v.toFixed(4)).join(', ')}</div>
-      ${rgba ? `<div><b>rgba</b>: ${rgba.map(v => Math.round(v)).join(', ')}</div>` : ''}
     `;
 
     tooltip.style.left = `${cssX + 12}px`;
@@ -1409,7 +1440,7 @@ function applyHighlight(dataset, cellId, cellValue, groupKey) {
   el.style.outline = 'none';
   el.addEventListener('keydown', onKeyDown);
   el.focus();
-  
+
   let mouseDown = null;
   const DRAG_THRESHOLD = 5;
 

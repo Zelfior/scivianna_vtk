@@ -363,6 +363,18 @@ class VTKPlotter(JSComponent):
         default=[float("nan"), float("nan"), float("nan")],
         doc="[x, y, z] coordinates of the current hover position."
     )
+    hover_origin = param.List(
+        default=[0.0, 0.0, 0.0],
+        doc="Origin point [x, y, z] for  alternate coordinate system in 2D mode."
+    )
+    hover_u_vector = param.List(
+        default=[1.0, 0.0, 0.0],
+        doc="U direction vector [u0, u1, u2] for 2D coordinate transformation."
+    )
+    hover_v_vector = param.List(
+        default=[0.0, 1.0, 0.],
+        doc="Second direction vector (v) for 2D coordinate transformation."
+    )
 
     # Clip plane parameters
     clip_enabled = param.Boolean(default=False, doc="Enable/disable clip plane visualization")

@@ -1512,21 +1512,23 @@ function applyHighlight(dataset, cellId, cellValue, groupKey) {
     // Re-auto-clip on geometry change
     autoClipPlane();
     syncClipStateToModel();
-    renderUpdate(true);
-    // Re-initialize widget bounds when geometry changes
+    // Re-initialize wzdget bounds when geometry changes
     initializeWidget();
     syncWidgetFromPlane();
     refreshMainEdges();
     refreshClipEdges();
+    // Re-render to show updated edges (especially important in 2D mode)
+    renderUpdate(false);
   });
 
   model.on("change:colors", () => {
     clearHighlight();
     lastHover = { cellId: -2, cellValue: null, position: [NaN, NaN, NaN], dataset: null };
     updateScalars(model.colors);
-    renderUpdate(false);
     refreshMainEdges();
     refreshClipEdges();
+    // Re-render to show updated edges (especially important in 2D mode)
+    renderUpdate(false);
   });
 
   model.on?.('change:info', onInfoChange);

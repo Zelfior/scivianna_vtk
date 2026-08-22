@@ -1,3 +1,11 @@
+/**
+ * Main VTK Plotter component for Panel.
+ * 
+ * This module orchestrates the VTK.js rendering pipeline, integrating
+ * geometry loading, clip plane controls, feature edges, hover picking,
+ * and colorbar visualization.
+ */
+
 import '@kitware/vtk.js/Rendering/Profiles/Geometry';
 
 import vtkGenericRenderWindow from '@kitware/vtk.js/Rendering/Misc/GenericRenderWindow';
@@ -25,11 +33,16 @@ import vtkInteractorStyleManipulator from '@kitware/vtk.js/Interaction/Style/Int
 import vtkMouseCameraTrackballPanManipulator from '@kitware/vtk.js/Interaction/Manipulators/MouseCameraTrackballPanManipulator';
 import vtkMouseCameraTrackballZoomManipulator from '@kitware/vtk.js/Interaction/Manipulators/MouseCameraTrackballZoomManipulator';
 
+// Import modular components
+import { toTyped, getArrayValue, makeCellArray, toStrings } from './src/utils.js';
+import { buildFeatureEdges, createEdgeActor, loadEdgesInto } from './src/edges.js';
+import { updateHover, clearHighlight, applyHighlight, computeGroupKey } from './src/hover.js';
+
 export function render({ model, el }) {
 
-  // ----------------------------------------------------------------------------
+  // =============================================================================
   // Renderer setup
-  // ----------------------------------------------------------------------------
+  // =============================================================================
 
   const genericRenderWindow = vtkGenericRenderWindow.newInstance();
   genericRenderWindow.setContainer(el);
@@ -44,46 +57,40 @@ export function render({ model, el }) {
   const renderer = genericRenderWindow.getRenderer();
   const renderWindow = genericRenderWindow.getRenderWindow();
   const interactor = renderWindow.getInteractor();
-  // The real OpenGL render window - used to translate CSS mouse coordinates
-  // into the framebuffer's actual pixel space (see onMouseMove / picking
-  // fix below). Its size can differ from el.getBoundingClientRect() by
-  // window.devicePixelRatio on hi-DPI displays.
   const openGLRenderWindow = genericRenderWindow.getApiSpecificRenderWindow();
 
-  // ----------------------------------------------------------------------------
+  // =============================================================================
   // Interactor Styles Setup
-  // ----------------------------------------------------------------------------
-  // Keep reference to default style (rotate + pan + zoom) for 3D mode
+  // =============================================================================
+
   const defaultInteractorStyle = interactor.getInteractorStyle();
 
-  // 2D mode style: pan + zoom only, no rotate manipulator
   const panZoomInteractorStyle = vtkInteractorStyleManipulator.newInstance();
   panZoomInteractorStyle.addMouseManipulator(
-    vtkMouseCameraTrackballPanManipulator.newInstance({ button: 1 }) // left-drag = pan
+    vtkMouseCameraTrackballPanManipulator.newInstance({ button: 1 })
   );
   panZoomInteractorStyle.addMouseManipulator(
-    vtkMouseCameraTrackballPanManipulator.newInstance({ button: 2 }) // middle-drag = pan
+    vtkMouseCameraTrackballPanManipulator.newInstance({ button: 2 })
   );
   panZoomInteractorStyle.addMouseManipulator(
-    vtkMouseCameraTrackballZoomManipulator.newInstance({ button: 3 }) // right-drag = zoom
+    vtkMouseCameraTrackballZoomManipulator.newInstance({ button: 3 })
   );
   panZoomInteractorStyle.addMouseManipulator(
-    vtkMouseCameraTrackballZoomManipulator.newInstance({ scrollEnabled: true }) // wheel = zoom
+    vtkMouseCameraTrackballZoomManipulator.newInstance({ scrollEnabled: true })
   );
 
   renderer.setBackground(1, 1, 1);
 
-  // ----------------------------------------------------------------------------
+  // =============================================================================
   // 2D Mode State
-  // ----------------------------------------------------------------------------
-  // When enabled: parallel projection, top-down view, rotation disabled
-  // Panning and zooming remain functional
-  let is2DMode = model.view_2d_mode !== undefined ? model.view_2d_mode : false;
-  let savedCameraState = null; // Store camera state when entering 2D mode
+  // =============================================================================
 
-  // ----------------------------------------------------------------------------
+  let is2DMode = model.view_2d_mode !== undefined ? model.view_2d_mode : false;
+  let savedCameraState = null;
+
+  // =============================================================================
   // Tooltip
-  // ----------------------------------------------------------------------------
+  // =============================================================================
 
   const tooltip = document.createElement('div');
   tooltip.style.position = 'absolute';
@@ -99,22 +106,9 @@ export function render({ model, el }) {
   tooltip.style.zIndex = '100';
   el.appendChild(tooltip);
 
-  // ----------------------------------------------------------------------------
+  // =============================================================================
   // Colorbar
-  //
-  // IMPORTANT: vtkScalarBarActor derives its displayed min/max (the numbers
-  // drawn next to the ticks) from `lookupTable.getRange()`. For a
-  // vtkColorTransferFunction, getRange() is computed from the *positions of
-  // its own RGB control points* - it is NOT affected by setMappingRange(),
-  // which only rescales how scalar values map through the LUT for mesh
-  // coloring. That's why the colorbar rendered fine but the range labels
-  // were stuck at whatever the control points were created with (0..1).
-  //
-  // The fix: whenever colorbarMin/Max/scale/colors change, rebuild the
-  // transfer function's control points directly at those positions. This
-  // also gives us a natural hook to support an arbitrary list of colors
-  // instead of the old hardcoded 3-stop blue/green/red ramp.
-  // ----------------------------------------------------------------------------
+  // =============================================================================
 
   const scalarBarActor = vtkScalarBarActor.newInstance();
   const lookupTable = vtkColorTransferFunction.newInstance();
@@ -122,30 +116,18 @@ export function render({ model, el }) {
 
   scalarBarActor.setScalarsToColors(lookupTable);
 
-  // Colorbar state from model
   let colorbarVisible = model.colorbar_visible !== undefined ? model.colorbar_visible : false;
   let colorbarScale = model.colorbar_scale !== undefined ? model.colorbar_scale : 'linear';
   let colorbarMin = model.colorbar_min !== undefined ? model.colorbar_min : 0.0;
   let colorbarMax = model.colorbar_max !== undefined ? model.colorbar_max : 1.0;
-  // Default colormap (blue -> green -> red), overridable from Python via
-  // `colorbar_colors` as a list of [r, g, b] triples (each channel 0-1).
   let colorbarColors = model.colorbar_colors !== undefined && model.colorbar_colors !== null
     ? model.colorbar_colors
     : [[0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]];
 
   scalarBarActor.setVisibility(colorbarVisible);
   scalarBarActor.setAxisLabel('');
-  scalarBarActor.setTickTextStyle({
-  fontColor: '#666666',
-});
+  scalarBarActor.setTickTextStyle({ fontColor: '#666666' });
 
-  /**
-   * Rebuild the transfer function's control points from scratch, spaced
-   * across [colorbarMin, colorbarMax] (or log-spaced across that range when
-   * colorbarScale === 'log' and the range is strictly positive - vtk.js has
-   * no native log-scale scalar bar, so this approximates it by warping the
-   * *positions* of the color stops rather than their spacing on screen).
-   */
   function rebuildLookupTable() {
     lookupTable.removeAllPoints();
 
@@ -156,12 +138,6 @@ export function render({ model, el }) {
     let min = colorbarMin;
     let max = colorbarMax;
 
-    // vtk.js's ColorTransferFunction interpolation assumes strictly
-    // increasing, distinct control-point positions. A zero/negative/NaN
-    // span (e.g. a constant field where min === max, or bad input)
-    // collapses every color stop onto the same x value, which crashes the
-    // lookup with "Unexpected case in interpolateData" on every sample
-    // along the bar. Fall back to a tiny synthetic span in that case.
     if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) {
       const base = Number.isFinite(min) ? min : 0;
       min = base;
@@ -173,11 +149,6 @@ export function render({ model, el }) {
     const useLog = colorbarScale === 'log' && min > 0 && max > 0;
     const logMin = useLog ? Math.log10(min) : 0;
     const logMax = useLog ? Math.log10(max) : 0;
-
-    // Minimum separation enforced between consecutive control points, so
-    // floating-point rounding (e.g. a very small span with many colors)
-    // can never produce two stops at an identical x - same crash, sneakier
-    // cause.
     const minStep = span > 0 ? span * 1e-6 : 1e-6;
 
     let lastValue = -Infinity;
@@ -198,59 +169,41 @@ export function render({ model, el }) {
     lookupTable.updateRange();
   }
 
-  function updateColorbarRange() {
-    rebuildLookupTable();
-  }
-
+  function updateColorbarRange() { rebuildLookupTable(); }
   function setColorbarVisible(visible) {
     colorbarVisible = visible;
     scalarBarActor.setVisibility(visible);
     renderWindow.render();
   }
-
   function setColorbarScale(scale) {
     colorbarScale = scale;
     rebuildLookupTable();
     renderWindow.render();
   }
-
   function setColorbarRange(min, max) {
     colorbarMin = min;
     colorbarMax = max;
     rebuildLookupTable();
     renderWindow.render();
   }
-
   function setColorbarColors(colors) {
     colorbarColors = colors;
     rebuildLookupTable();
     renderWindow.render();
   }
 
-  // Add scalar bar actor to renderer
   renderer.addActor(scalarBarActor);
-
-  // Initialize colorbar range/colors
   rebuildLookupTable();
 
-  // ----------------------------------------------------------------------------
+  // =============================================================================
   // Clip Plane and Widget
-  //
-  // ONE implicit vtkPlane drives ONE vtkClipPolyData filter. Previously there
-  // was a second, unused "clipPlane" object that was actually a vtkClipPolyData
-  // instance being mistakenly treated as the plane (setOrigin/setNormal calls
-  // on a filter, and used as the clip *function* of the real clipper). That's
-  // why clipping never worked.
-  // ----------------------------------------------------------------------------
+  // =============================================================================
 
   const plane = vtkPlane.newInstance();
   plane.setNormal(0, 0, 1);
   plane.setOrigin(0, 0, 0);
 
-  // Create the implicit plane widget for interaction
   const widget = vtkImplicitPlaneWidget.newInstance();
-  widget.setPlaceFactor(1.25);
-
   const widgetState = widget.getWidgetState();
 
   function syncWidgetFromPlane() {
@@ -258,7 +211,6 @@ export function render({ model, el }) {
     widgetState.setNormal(clipNormal);
   }
 
-  // Widget manager to handle the widget
   const widgetManager = vtkWidgetManager.newInstance();
   widgetManager.setRenderer(renderer);
   const widgetInstance = widgetManager.addWidget(widget);
@@ -273,72 +225,22 @@ export function render({ model, el }) {
   }
   setPlaneWidgetVisible(planeEnabled);
 
-  // Initialize widget with the geometry bounds after data is loaded
   function initializeWidget() {
     const bounds = polyData.getBounds();
-    // Check if bounds are valid (non-zero size)
-    const size = [
-      bounds[1] - bounds[0],
-      bounds[3] - bounds[2],
-      bounds[5] - bounds[4],
-    ];
+    const size = [bounds[1] - bounds[0], bounds[3] - bounds[2], bounds[5] - bounds[4]];
     if (size[0] > 0 || size[1] > 0 || size[2] > 0) {
       widget.placeWidget(bounds);
     }
   }
 
-  // ----------------------------------------------------------------------------
-  // Helpers
-  // ----------------------------------------------------------------------------
-
-  function toTyped(buffer, dtype) {
-    if (!buffer) return null;
-    switch (dtype) {
-      case 'uint8':
-        return new Uint8Array(buffer);
-      case 'float32':
-      default:
-        return new Float32Array(buffer);
-    }
-  }
-
-  function toStrings(buffer, numTuples, stringLength) {
-    if (!buffer || numTuples === 0 || stringLength === 0) return [];
-    const strings = [];
-    for (let i = 0; i < numTuples; i++) {
-      const start = i * stringLength;
-      let str = '';
-      for (let j = 0; j < stringLength; j++) {
-        const byte = buffer[start + j];
-        if (byte === 0) break; // null terminator
-        str += String.fromCharCode(byte);
-      }
-      strings.push(str);
-    }
-    return strings;
-  }
-
-  function makeCellArray(cell) {
-    if (!cell || !cell.buffer) return null;
-    const values = new Uint32Array(cell.buffer);
-    const vtkArr = vtkCellArray.newInstance();
-    vtkArr.setData(values);
-    return vtkArr;
-  }
-
-  // ----------------------------------------------------------------------------
+  // =============================================================================
   // Persistent pipeline
-  // ----------------------------------------------------------------------------
+  // =============================================================================
 
   const polyData = vtkPolyData.newInstance();
 
-  // ----------------------------------------------------------------------------
-  // Main Actor Setup (original, unclipped geometry)
-  // ----------------------------------------------------------------------------
-
   const mapper = vtkMapper.newInstance();
   mapper.setInputData(polyData);
-
   mapper.setScalarVisibility(true);
   mapper.setScalarModeToUseCellFieldData();
   mapper.setColorModeToDirectScalars();
@@ -349,9 +251,6 @@ export function render({ model, el }) {
 
   const prop = actor.getProperty();
   prop.setRepresentationToSurface();
-  // Edges are no longer drawn by VTK's flat-color edge rendering - see the
-  // "Feature Edges" section below, which draws a colored, cell_id-aware
-  // edge overlay instead.
   prop.setEdgeVisibility(false);
   prop.setAmbient(0.2);
   prop.setDiffuse(0.8);
@@ -360,14 +259,9 @@ export function render({ model, el }) {
 
   renderer.addActor(actor);
 
-  // ----------------------------------------------------------------------------
+  // =============================================================================
   // Clipped Actor Setup
-  //
-  // `clipper` (vtkClipPolyData) is a fast, local, purely-geometric clip of
-  // `polyData` - cheap enough to run on every mouse-move. It cuts away the
-  // body correctly, but leaves an open hole at the cut (vtk.js doesn't know
-  // the real field data through the interior, so it can't cap it properly).
-  // ----------------------------------------------------------------------------
+  // =============================================================================
 
   const clipper = vtkClipPolyData.newInstance();
   clipper.setClipFunction(plane);
@@ -392,21 +286,9 @@ export function render({ model, el }) {
 
   renderer.addActor(clipActor);
 
-  // ----------------------------------------------------------------------------
+  // =============================================================================
   // Cap Actor Setup
-  //
-  // `capPolyData` holds the exact intersection between the clip plane and
-  // the real source mesh, computed in python via pyvista's `.slice()` (see
-  // `_recompute_clip_slice` in the python component) and delivered through
-  // `model.clip_slice`. It's a thin, real cross-section with real
-  // interpolated data - not a blind triangulated fill - and is rendered as
-  // a separate actor sitting right in the hole left by `clipActor`.
-  //
-  // It only updates once python has computed a fresh slice (i.e. after the
-  // mouse is released - see `onEndInteractionEvent` below), and is hidden
-  // while the plane is actively being dragged since a stale cap would be
-  // misleading.
-  // ----------------------------------------------------------------------------
+  // =============================================================================
 
   const capPolyData = vtkPolyData.newInstance();
 
@@ -428,225 +310,51 @@ export function render({ model, el }) {
   capProp.setAmbient(0.3);
   capProp.setDiffuse(0.7);
   capProp.setSpecular(0.0);
-  // Slight forward offset so the cap doesn't z-fight with the clipped
-  // body's cut edge.
   capProp.setLighting(true);
 
   capActor.setVisibility(false);
   renderer.addActor(capActor);
 
-  // ----------------------------------------------------------------------------
+  // =============================================================================
   // Feature Edges
-  //
-  // VTK's built-in EdgeVisibility draws every triangle edge in one flat
-  // color - visually flat, and noisy on triangulated meshes since every
-  // triangulation edge shows, not just meaningful ones. Instead we build our
-  // own thin line geometry per surface (main / clipped / cap) containing
-  // only:
-  //   - mesh boundary edges (used by exactly one triangle), and
-  //   - edges shared by two triangles whose 'cell_id' differ.
-  // Internal triangulation edges within the same cell_id are skipped
-  // entirely. Each edge is colored from its adjacent face color(s),
-  // darkened by a fixed amount, so edge color tracks face color instead of
-  // being flat black.
-  //
-  // `cell_id` and `rgb` are both cell-indexed arrays, one entry per polygon
-  // in the same order as the `polys` connectivity (see the python side's
-  // `polydata_to_dict`), which is what makes matching edges to their owning
-  // cell's data straightforward.
-  // ----------------------------------------------------------------------------
+  // =============================================================================
 
-  const EDGE_DARKEN_FRACTION = 0.5; // "color - 40%", i.e. multiply by 0.6
+  const vtkClasses = {
+    vtkPoints,
+    vtkCellArray,
+    vtkDataArray,
+    vtkPolyData,
+    vtkMapper,
+    vtkActor,
+  };
 
-  function darkenRGB(tuple) {
-    return tuple.map((v) => v * (1 - EDGE_DARKEN_FRACTION));
-  }
+  const { edgePolyData: mainEdgePolyData, edgeActor: mainEdgeActor } = createEdgeActor(vtkClasses);
+  const { edgePolyData: clipEdgePolyData, edgeActor: clipEdgeActor } = createEdgeActor(vtkClasses);
+  const { edgePolyData: capEdgePolyData, edgeActor: capEdgeActor } = createEdgeActor(vtkClasses);
 
-  // Parse a vtk.js CellArray (legacy flat format: n, id0..idn-1, n, ...)
-  // into an array of point-id arrays, one per cell.
-  function parseCellsPointIds(cellArray) {
-    if (!cellArray || cellArray.getNumberOfCells() === 0) return [];
-    const data = cellArray.getData();
-    const cells = [];
-    let i = 0;
-    while (i < data.length) {
-      const n = data[i];
-      const pts = new Array(n);
-      for (let k = 0; k < n; k++) pts[k] = data[i + 1 + k];
-      cells.push(pts);
-      i += n + 1;
-    }
-    return cells;
-  }
-
-  /**
-   * Build { points, lines, colors } describing the feature edges of
-   * `sourcePolyData`'s polys. Returns null if there's nothing to draw (no
-   * polys at all).
-   */
-  function buildFeatureEdges(sourcePolyData) {
-    const polys = sourcePolyData?.getPolys();
-    const points = sourcePolyData?.getPoints();
-    if (!polys || polys.getNumberOfCells() === 0 || !points) return null;
-
-    const cd = sourcePolyData.getCellData();
-    const cellIdArray = cd.getArrayByName('cell_id');
-    const rgbArray = cd.getArrayByName('rgb');
-
-    // Cell data is indexed across verts+lines+polys+strips in that order,
-    // so a poly at local index `k` sits at global cell id `cellOffset + k`.
-    const cellOffset =
-      sourcePolyData.getVerts().getNumberOfCells() +
-      sourcePolyData.getLines().getNumberOfCells();
-
-    const cellsPointIds = parseCellsPointIds(polys);
-
-    // edgeKey "a_b" (a < b) -> owning poly-local cell indices
-    const edgeOwners = new Map();
-    cellsPointIds.forEach((pts, cellIdx) => {
-      const n = pts.length;
-      for (let k = 0; k < n; k++) {
-        const a = pts[k];
-        const b = pts[(k + 1) % n];
-        const key = a < b ? `${a}_${b}` : `${b}_${a}`;
-        let owners = edgeOwners.get(key);
-        if (!owners) {
-          owners = [];
-          edgeOwners.set(key, owners);
-        }
-        owners.push(cellIdx);
-      }
-    });
-
-    const linePairs = [];
-    const lineColors = [];
-
-    edgeOwners.forEach((owners, key) => {
-      let colorTuple = null;
-
-      if (owners.length === 1) {
-        // Mesh boundary edge - always shown.
-        const g = cellOffset + owners[0];
-        colorTuple = rgbArray ? Array.from(rgbArray.getTuple(g)) : [0, 0, 0];
-      } else {
-        // Shared by 2+ triangles (2 for a manifold mesh; for non-manifold
-        // meshes just compare the first two owners). Only show it if the
-        // owning cells belong to different logical cell_id groups.
-        const [c0, c1] = owners;
-        const g0 = cellOffset + c0;
-        const g1 = cellOffset + c1;
-        const id0 = cellIdArray ? cellIdArray.getValue(g0) : g0;
-        const id1 = cellIdArray ? cellIdArray.getValue(g1) : g1;
-        if (id0 !== id1) {
-          const rgb0 = rgbArray ? Array.from(rgbArray.getTuple(g0)) : [0, 0, 0];
-          const rgb1 = rgbArray ? Array.from(rgbArray.getTuple(g1)) : [0, 0, 0];
-          colorTuple = rgb0.map((v, i) => (v + rgb1[i]) / 2);
-        }
-      }
-
-      if (colorTuple) {
-        const [a, b] = key.split('_').map(Number);
-        linePairs.push(a, b);
-        const dark = darkenRGB(colorTuple);
-        lineColors.push(dark[0]*255, dark[1]*255, dark[2]*255);
-      }
-    });
-
-    if (linePairs.length === 0) return null;
-
-    const numEdges = linePairs.length / 2;
-    const linesFlat = new Uint32Array(numEdges * 3);
-    for (let e = 0; e < numEdges; e++) {
-      linesFlat[e * 3] = 2;
-      linesFlat[e * 3 + 1] = linePairs[e * 2];
-      linesFlat[e * 3 + 2] = linePairs[e * 2 + 1];
-    }
-
-    return {
-      points: points.getData(), // reuse the source's own point buffer directly
-      lines: linesFlat,
-      colors: new Uint8Array(lineColors),
-    };
-  }
-
-  function makeEdgeActor() {
-    const edgePolyData = vtkPolyData.newInstance();
-    const edgeMapper = vtkMapper.newInstance();
-    edgeMapper.setInputData(edgePolyData);
-    edgeMapper.setScalarVisibility(true);
-    edgeMapper.setScalarModeToUseCellFieldData();
-    edgeMapper.setColorModeToDirectScalars();
-    edgeMapper.setColorByArrayName('rgb');
-
-    const edgeActor = vtkActor.newInstance();
-    edgeActor.setMapper(edgeMapper);
-    edgeActor.getProperty().setLighting(false);
-    edgeActor.getProperty().setLineWidth(1.5);
-    edgeActor.setVisibility(false);
-    renderer.addActor(edgeActor);
-
-    return { edgePolyData, edgeActor };
-  }
-
-  const { edgePolyData: mainEdgePolyData, edgeActor: mainEdgeActor } = makeEdgeActor();
-  const { edgePolyData: clipEdgePolyData, edgeActor: clipEdgeActor } = makeEdgeActor();
-  const { edgePolyData: capEdgePolyData, edgeActor: capEdgeActor } = makeEdgeActor();
+  // Add edge actors to the renderer
+  renderer.addActor(mainEdgeActor);
+  renderer.addActor(clipEdgeActor);
+  renderer.addActor(capEdgeActor);
 
   let hasMainEdges = false;
   let hasClipEdges = false;
   let hasCapEdges = false;
 
-  // Edge visibility control
   let edgesVisible = (model.edges_visible !== undefined && model.edges_visible !== null) ? model.edges_visible : true;
-  // Track if edges need refreshing (geometry changed while edges were hidden)
   let mainEdgesStale = false;
   let clipEdgesStale = false;
   let capEdgesStale = false;
 
-  // Edge actors mirror the visibility of the surface they belong to (no
-  // point showing clip edges while the clipped body itself is hidden).
   function syncEdgeVisibility() {
     mainEdgeActor.setVisibility(edgesVisible && hasMainEdges && actor.getVisibility());
     clipEdgeActor.setVisibility(edgesVisible && hasClipEdges && clipActor.getVisibility());
     capEdgeActor.setVisibility(edgesVisible && hasCapEdges && capActor.getVisibility());
   }
 
-  function loadEdgesInto(sourcePolyData, targetEdgePolyData) {
-    const built = buildFeatureEdges(sourcePolyData);
-    if (!built) return false;
-
-    const pointsObj = vtkPoints.newInstance();
-    pointsObj.setData(built.points, 3);
-    targetEdgePolyData.setPoints(pointsObj);
-
-    const linesArr = vtkCellArray.newInstance();
-    linesArr.setData(built.lines);
-    targetEdgePolyData.setLines(linesArr);
-
-    const cellD = targetEdgePolyData.getCellData();
-    cellD.initialize();
-    const colorArr = vtkDataArray.newInstance({
-      name: 'rgb',
-      values: built.colors,
-      numberOfComponents: 3,
-    });
-    cellD.addArray(colorArr);
-    cellD.setScalars(colorArr);
-    cellD.modified();
-
-    targetEdgePolyData.modified();
-    return true;
-  }
-
-  // Recomputing is O(triangle count) - cheap enough to call after any
-  // "settled" change (load, color update, mouse-release on the clip
-  // widget), but deliberately NOT wired into the continuous drag callback
-  // (`onInteractionEvent`) to avoid re-parsing the whole clipped mesh on
-  // every mouse-move frame. During an active drag the clip edges simply
-  // stay as they were until the mouse is released.
   function refreshMainEdges() {
     if (edgesVisible) {
-      hasMainEdges = loadEdgesInto(polyData, mainEdgePolyData);
+      hasMainEdges = loadEdgesInto(polyData, mainEdgePolyData, vtkClasses);
       mainEdgesStale = false;
     } else {
       mainEdgesStale = true;
@@ -655,7 +363,7 @@ export function render({ model, el }) {
   }
   function refreshClipEdges() {
     if (edgesVisible) {
-      hasClipEdges = loadEdgesInto(clipper.getOutputData(), clipEdgePolyData);
+      hasClipEdges = loadEdgesInto(clipper.getOutputData(), clipEdgePolyData, vtkClasses);
       clipEdgesStale = false;
     } else {
       clipEdgesStale = true;
@@ -664,7 +372,7 @@ export function render({ model, el }) {
   }
   function refreshCapEdges() {
     if (edgesVisible) {
-      hasCapEdges = hasCapSlice ? loadEdgesInto(capPolyData, capEdgePolyData) : false;
+      hasCapEdges = hasCapSlice ? loadEdgesInto(capPolyData, capEdgePolyData, vtkClasses) : false;
       capEdgesStale = false;
     } else {
       capEdgesStale = true;
@@ -679,26 +387,21 @@ export function render({ model, el }) {
     renderUpdate(true);
   }
 
-  /**
-   * Enable or disable edge display
-   * @param {boolean} enabled - Whether to show edges
-   */
   function setEdgesVisible(enabled) {
     const wasVisible = edgesVisible;
     edgesVisible = enabled;
 
-    // If turning on and edges are stale, refresh them
     if (enabled && !wasVisible) {
       if (mainEdgesStale) {
-        hasMainEdges = loadEdgesInto(polyData, mainEdgePolyData);
+        hasMainEdges = loadEdgesInto(polyData, mainEdgePolyData, vtkClasses);
         mainEdgesStale = false;
       }
       if (clipEdgesStale) {
-        hasClipEdges = loadEdgesInto(clipper.getOutputData(), clipEdgePolyData);
+        hasClipEdges = loadEdgesInto(clipper.getOutputData(), clipEdgePolyData, vtkClasses);
         clipEdgesStale = false;
       }
       if (capEdgesStale) {
-        hasCapEdges = hasCapSlice ? loadEdgesInto(capPolyData, capEdgePolyData) : false;
+        hasCapEdges = hasCapSlice ? loadEdgesInto(capPolyData, capEdgePolyData, vtkClasses) : false;
         capEdgesStale = false;
       }
     }
@@ -707,31 +410,25 @@ export function render({ model, el }) {
     renderWindow.render();
   }
 
-  // Clip plane control state
+  // =============================================================================
+  // Clip Plane Controls
+  // =============================================================================
+
   let clipEnabled = model.clip_enabled || false;
-  let clipNormal = model.clip_normal || [0, 0, 1]; // Current normal direction
-  let clipOrigin = model.clip_origin || [0, 0, 0]; // Current origin position
+  let clipNormal = model.clip_normal || [0, 0, 1];
+  let clipOrigin = model.clip_origin || [0, 0, 0];
 
   plane.setOrigin(clipOrigin[0], clipOrigin[1], clipOrigin[2]);
   plane.setNormal(clipNormal[0], clipNormal[1], clipNormal[2]);
 
-  // Set initial visibility - clipActor visible when enabled, original actor hidden
   clipActor.setVisibility(clipEnabled);
   actor.setVisibility(!clipEnabled);
 
-  // Update the local plane + fast preview while the widget is being dragged.
-  // NOTE: this intentionally does NOT sync to python on every call - see
-  // `onEndInteractionEvent` below, which is the only place that pushes the
-  // plane state to python (i.e. on mouse release).
   widgetInstance.onStartInteractionEvent(() => {
-    // A new drag is starting: whatever cap is currently shown is about to
-    // be wrong for the plane position we're moving to, so hide it until
-    // python sends a fresh slice for the new plane.
     capActor.setVisibility(false);
     mainEdgeActor.setVisibility(false);
     clipEdgeActor.setVisibility(false);
     capEdgeActor.setVisibility(false);
-
     syncPickList();
   });
 
@@ -752,225 +449,12 @@ export function render({ model, el }) {
   });
 
   widgetInstance.onEndInteractionEvent(() => {
-    // Mouse released: this is the one point where we tell python the final
-    // plane state, which triggers it to recompute the data-accurate cap
-    // slice (plane ∩ real mesh) and send it back via `clip_slice`.
     syncClipStateToModel();
     refreshClipEdges();
-
-    // Restore edge visibility
     syncEdgeVisibility();
-
     renderWindow.render();
   });
 
-  // ----------------------------------------------------------------------------
-  // Picker
-  // ----------------------------------------------------------------------------
-
-  const picker = vtkCellPicker.newInstance();
-  picker.setPickFromList(true);
-  // The default tolerance is a fairly generous world-space radius, meaning
-  // the picker can snap to a *neighboring* cell instead of the one literally
-  // under the cursor (especially on dense meshes, thin cells, or shallow
-  // viewing angles). Tightening it makes picks track the exact cell more
-  // reliably.
-  picker.setTolerance(0.0005);
-
-  // Keep the pick list limited to actors that are actually visible right
-  // now. Previously all three actors (actor / clipActor / capActor) stayed
-  // in the list permanently, even the ones hidden by setClipEnabled/
-  // updateCapVisibility. Where a hidden actor's geometry sits behind or
-  // coincident with the visible one, the picker could resolve a hit against
-  // the *hidden* actor's cell - same screen location, wrong cell/dataset -
-  // which shows up as an intermittently "off" hover/highlight, especially
-  // near the clip boundary. Call this any time visibility changes.
-  function syncPickList() {
-    picker.initializePickList();
-    if (actor.getVisibility()) picker.addPickList(actor);
-    if (clipActor.getVisibility()) picker.addPickList(clipActor);
-    if (capActor.getVisibility()) picker.addPickList(capActor);
-  }
-  syncPickList();
-
-  // ----------------------------------------------------------------------------
-  // Update PolyData
-  // ----------------------------------------------------------------------------
-  function updateGeometry(data) {
-    if (!data) return;
-
-    // Points
-    const pts = toTyped(data.points?.buffer, data.points?.dtype || "float32");
-    if (pts) {
-      const points = vtkPoints.newInstance();
-      points.setData(pts, 3);
-      polyData.setPoints(points);
-    }
-
-    // Topology
-    polyData.setPolys(makeCellArray(data.polys));
-    polyData.setLines(makeCellArray(data.lines));
-    polyData.setVerts(makeCellArray(data.verts));
-    polyData.setStrips(makeCellArray(data.strips));
-
-    polyData.modified();
-    clipper.modified();
-
-    refreshMainEdges();
-  }
-
-  function updateScalars(data) {
-    if (!data) return;
-
-    // Point data
-    const pd = polyData.getPointData();
-    pd.initialize();
-
-    Object.entries(data.pointData || {}).forEach(([name, entry], idx) => {
-      let vtkArr;
-      if (entry.dtype === 'string') {
-        const strings = toStrings(
-          new Uint8Array(entry.buffer),
-          entry.numTuples,
-          entry.stringLength
-        );
-        vtkArr = vtkStringArray.newInstance({
-          name,
-          values: strings,
-          numberOfComponents: 1,
-        });
-      } else {
-        vtkArr = vtkDataArray.newInstance({
-          name,
-          values: toTyped(entry.buffer, entry.dtype),
-          numberOfComponents: entry.components,
-        });
-      }
-      pd.addArray(vtkArr);
-      if (idx === 0) pd.setScalars(vtkArr);
-    });
-
-    // Cell data
-    const cd = polyData.getCellData();
-    cd.initialize();
-
-    Object.entries(data.cellData || {}).forEach(([name, entry]) => {
-      let vtkArr;
-      if (entry.dtype === 'string') {
-        const strings = toStrings(
-          new Uint8Array(entry.buffer),
-          entry.numTuples,
-          entry.stringLength
-        );
-        vtkArr = vtkStringArray.newInstance({
-          name,
-          values: strings,
-          numberOfComponents: 1,
-        });
-      } else {
-        vtkArr = vtkDataArray.newInstance({
-          name,
-          values: toTyped(entry.buffer, entry.dtype),
-          numberOfComponents: entry.components,
-        });
-      }
-      cd.addArray(vtkArr);
-    });
-
-    pd.modified();
-    cd.modified();
-    polyData.modified();
-    clipper.modified();
-  }
-
-  // Load the python-computed slice (geometry + point/cell data combined in
-  // one payload) into `capPolyData`.
-  function updateCapSlice(data) {
-    if (!data) {
-      hasCapSlice = false;
-      return;
-    }
-
-    const pts = toTyped(data.points?.buffer, data.points?.dtype || 'float32');
-    if (pts) {
-      const points = vtkPoints.newInstance();
-      points.setData(pts, 3);
-      capPolyData.setPoints(points);
-    }
-
-    capPolyData.setPolys(makeCellArray(data.polys));
-    capPolyData.setLines(makeCellArray(data.lines));
-    capPolyData.setVerts(makeCellArray(data.verts));
-    capPolyData.setStrips(makeCellArray(data.strips));
-
-    const pd = capPolyData.getPointData();
-    pd.initialize();
-    Object.entries(data.pointData || {}).forEach(([name, entry], idx) => {
-      let vtkArr;
-      if (entry.dtype === 'string') {
-        const strings = toStrings(
-          new Uint8Array(entry.buffer),
-          entry.numTuples,
-          entry.stringLength
-        );
-        vtkArr = vtkStringArray.newInstance({
-          name,
-          values: strings,
-          numberOfComponents: 1,
-        });
-      } else {
-        vtkArr = vtkDataArray.newInstance({
-          name,
-          values: toTyped(entry.buffer, entry.dtype),
-          numberOfComponents: entry.components,
-        });
-      }
-      pd.addArray(vtkArr);
-      if (idx === 0) pd.setScalars(vtkArr);
-    });
-
-    const cd = capPolyData.getCellData();
-    cd.initialize();
-    Object.entries(data.cellData || {}).forEach(([name, entry]) => {
-      let vtkArr;
-      if (entry.dtype === 'string') {
-        const strings = toStrings(
-          new Uint8Array(entry.buffer),
-          entry.numTuples,
-          entry.stringLength
-        );
-        vtkArr = vtkStringArray.newInstance({
-          name,
-          values: strings,
-          numberOfComponents: 1,
-        });
-      } else {
-        vtkArr = vtkDataArray.newInstance({
-          name,
-          values: toTyped(entry.buffer, entry.dtype),
-          numberOfComponents: entry.components,
-        });
-      }
-      cd.addArray(vtkArr);
-    });
-
-    pd.modified();
-    cd.modified();
-    capPolyData.modified();
-
-    hasCapSlice = true;
-  }
-
-  // ----------------------------------------------------------------------------
-  // Clip Plane Controls
-  // ----------------------------------------------------------------------------
-
-  /**
-   * Update clip plane position and orientation
-   * The plane normal points to the side that will be REMOVED
-   * @param {number[]} origin - [x, y, z] origin point for the plane
-   * @param {number[]} normal - [x, y, z] normal vector (points to removed side)
-   */
   function updateClipPlane(origin, normal) {
     if (origin) {
       clipOrigin = origin;
@@ -985,20 +469,12 @@ export function render({ model, el }) {
     clipper.modified();
     clipper.update();
     refreshClipEdges();
-    // The current cap slice no longer matches this plane position; hide it
-    // until python computes a fresh one (see `change:clip_slice` handler).
     capActor.setVisibility(false);
     syncPickList();
     syncWidgetFromPlane();
     renderWindow.render();
   }
 
-  /**
-   * Enable or disable clip plane visualization (ParaView style)
-   * When enabled: shows geometry on one side of plane with intersection cap
-   * When disabled: shows full original geometry
-   * @param {boolean} enabled - Whether to show clipped geometry
-   */
   function setClipEnabled(enabled) {
     clipEnabled = enabled;
     clipActor.setVisibility(enabled);
@@ -1007,55 +483,32 @@ export function render({ model, el }) {
     renderWindow.render();
   }
 
-  /**
-   * Move clip plane along its normal direction
-   * @param {number} offset - Distance to move the plane
-   */
   function moveClipPlane(offset) {
     const newOrigin = [
       clipOrigin[0] + clipNormal[0] * offset,
       clipOrigin[1] + clipNormal[1] * offset,
       clipOrigin[2] + clipNormal[2] * offset,
     ];
-
     updateClipPlane(newOrigin, null);
   }
 
-  /**
-   * Set clip plane normal to a cardinal direction
-   * @param {'x' | 'y' | 'z'} axis - Axis for the normal direction
-   * @param {number} sign - Direction sign (1 or -1)
-   */
   function setClipAxis(axis) {
-  const axes = {
-    x: [1, 0, 0],
-    y: [0, 1, 0],
-    z: [0, 0, 1],
-  };
+    const axes = { x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] };
+    const target = axes[axis];
+    const eps = 1e-6;
 
-  const target = axes[axis];
-  const eps = 1e-6;
+    const aligned =
+      Math.abs(Math.abs(clipNormal[0]) - Math.abs(target[0])) < eps &&
+      Math.abs(Math.abs(clipNormal[1]) - Math.abs(target[1])) < eps &&
+      Math.abs(Math.abs(clipNormal[2]) - Math.abs(target[2])) < eps;
 
-  // Already pointing along this axis (either + or -)?
-  const aligned =
-    Math.abs(Math.abs(clipNormal[0]) - Math.abs(target[0])) < eps &&
-    Math.abs(Math.abs(clipNormal[1]) - Math.abs(target[1])) < eps &&
-    Math.abs(Math.abs(clipNormal[2]) - Math.abs(target[2])) < eps;
-
-  if (aligned) {
-    updateClipPlane(null, [
-      -clipNormal[0],
-      -clipNormal[1],
-      -clipNormal[2],
-    ]);
-  } else {
-    updateClipPlane(null, target);
+    if (aligned) {
+      updateClipPlane(null, [-clipNormal[0], -clipNormal[1], -clipNormal[2]]);
+    } else {
+      updateClipPlane(null, target);
+    }
   }
-}
 
-  /**
-   * Auto-position clip plane at geometry center
-   */
   function autoClipPlane() {
     const bounds = polyData.getBounds();
     const center = [
@@ -1070,7 +523,6 @@ export function render({ model, el }) {
     renderWindow.render();
   }
 
-  // Auto-position clip plane on initial load
   autoClipPlane();
 
   function renderUpdate(resetCamera = false) {
@@ -1083,14 +535,13 @@ export function render({ model, el }) {
     renderWindow.render();
   }
 
-  // ----------------------------------------------------------------------------
+  // =============================================================================
   // 2D Mode Control
-  // ----------------------------------------------------------------------------
+  // =============================================================================
 
   const camera = renderer.getActiveCamera();
 
   function apply2DView() {
-    // Store current camera state if not already stored
     if (!savedCameraState) {
       savedCameraState = {
         position: camera.getPosition(),
@@ -1101,29 +552,19 @@ export function render({ model, el }) {
       };
     }
 
-    // Get bounds to compute appropriate view
     const bounds = polyData.getBounds();
-    const center = [
-      (bounds[0] + bounds[1]) / 2,
-      (bounds[2] + bounds[3]) / 2,
-      (bounds[4] + bounds[5]) / 2,
-    ];
-
-    // Calculate appropriate distance based on bounds
+    const center = [(bounds[0]+bounds[1])/2, (bounds[2]+bounds[3])/2, (bounds[4]+bounds[5])/2];
     const xSize = bounds[1] - bounds[0];
     const ySize = bounds[3] - bounds[2];
-    const zSize = bounds[5] - bounds[4];
     const maxXYSize = Math.max(xSize, ySize, 1);
 
-    // Set top-down view (looking from +Z down to -Z)
     camera.setParallelProjection(true);
     camera.setParallelScale(maxXYSize / 2);
     camera.setFocalPoint(center[0], center[1], center[2]);
     camera.setPosition(center[0], center[1], center[2] + maxXYSize * 2);
-    camera.setViewUp(0, -1, 0); // Y-down for typical 2D view
+    camera.setViewUp(0, -1, 0);
     camera.setDistance(maxXYSize * 2);
 
-    // Reset clipping range for parallel projection
     renderer.resetCameraClippingRange();
   }
 
@@ -1143,26 +584,166 @@ export function render({ model, el }) {
 
     if (enabled) {
       apply2DView();
-      // Switch to pan/zoom only interactor style (no rotate manipulator)
       interactor.setInteractorStyle(panZoomInteractorStyle);
     } else {
       restore3DView();
-      // Restore default interactor style with rotation
       interactor.setInteractorStyle(defaultInteractorStyle);
     }
     renderWindow.render();
   }
 
-  // ----------------------------------------------------------------------------
+  // =============================================================================
   // Initial load
-  // ----------------------------------------------------------------------------
+  // =============================================================================
+
+  function updateGeometry(data) {
+    if (!data) return;
+
+    const pts = toTyped(data.points?.buffer, data.points?.dtype || "float32");
+    if (pts) {
+      const points = vtkPoints.newInstance();
+      points.setData(pts, 3);
+      polyData.setPoints(points);
+    }
+
+    polyData.setPolys(makeCellArray(data.polys));
+    polyData.setLines(makeCellArray(data.lines));
+    polyData.setVerts(makeCellArray(data.verts));
+    polyData.setStrips(makeCellArray(data.strips));
+
+    polyData.modified();
+    clipper.modified();
+
+    refreshMainEdges();
+  }
+
+  function updateScalars(data) {
+    if (!data) return;
+
+    const pd = polyData.getPointData();
+    pd.initialize();
+
+    Object.entries(data.pointData || {}).forEach(([name, entry], idx) => {
+      let vtkArr;
+      if (entry.dtype === 'string') {
+        const strings = toStrings(new Uint8Array(entry.buffer), entry.numTuples, entry.stringLength);
+        vtkArr = vtkStringArray.newInstance({ name, values: strings, numberOfComponents: 1 });
+      } else {
+        vtkArr = vtkDataArray.newInstance({
+          name,
+          values: toTyped(entry.buffer, entry.dtype),
+          numberOfComponents: entry.components,
+        });
+      }
+      pd.addArray(vtkArr);
+      if (idx === 0) pd.setScalars(vtkArr);
+    });
+
+    const cd = polyData.getCellData();
+    cd.initialize();
+
+    Object.entries(data.cellData || {}).forEach(([name, entry]) => {
+      let vtkArr;
+      if (entry.dtype === 'string') {
+        const strings = toStrings(new Uint8Array(entry.buffer), entry.numTuples, entry.stringLength);
+        vtkArr = vtkStringArray.newInstance({ name, values: strings, numberOfComponents: 1 });
+      } else {
+        vtkArr = vtkDataArray.newInstance({
+          name,
+          values: toTyped(entry.buffer, entry.dtype),
+          numberOfComponents: entry.components,
+        });
+      }
+      cd.addArray(vtkArr);
+    });
+
+    pd.modified();
+    cd.modified();
+    polyData.modified();
+    clipper.modified();
+  }
+
+  function updateCapSlice(data) {
+    if (!data) { hasCapSlice = false; return; }
+
+    const pts = toTyped(data.points?.buffer, data.points?.dtype || 'float32');
+    if (pts) {
+      const points = vtkPoints.newInstance();
+      points.setData(pts, 3);
+      capPolyData.setPoints(points);
+    }
+
+    capPolyData.setPolys(makeCellArray(data.polys));
+    capPolyData.setLines(makeCellArray(data.lines));
+    capPolyData.setVerts(makeCellArray(data.verts));
+    capPolyData.setStrips(makeCellArray(data.strips));
+
+    const pd = capPolyData.getPointData();
+    pd.initialize();
+    Object.entries(data.pointData || {}).forEach(([name, entry], idx) => {
+      let vtkArr;
+      if (entry.dtype === 'string') {
+        const strings = toStrings(new Uint8Array(entry.buffer), entry.numTuples, entry.stringLength);
+        vtkArr = vtkStringArray.newInstance({ name, values: strings, numberOfComponents: 1 });
+      } else {
+        vtkArr = vtkDataArray.newInstance({
+          name,
+          values: toTyped(entry.buffer, entry.dtype),
+          numberOfComponents: entry.components,
+        });
+      }
+      pd.addArray(vtkArr);
+      if (idx === 0) pd.setScalars(vtkArr);
+    });
+
+    const cd = capPolyData.getCellData();
+    cd.initialize();
+    Object.entries(data.cellData || {}).forEach(([name, entry]) => {
+      let vtkArr;
+      if (entry.dtype === 'string') {
+        const strings = toStrings(new Uint8Array(entry.buffer), entry.numTuples, entry.stringLength);
+        vtkArr = vtkStringArray.newInstance({ name, values: strings, numberOfComponents: 1 });
+      } else {
+        vtkArr = vtkDataArray.newInstance({
+          name,
+          values: toTyped(entry.buffer, entry.dtype),
+          numberOfComponents: entry.components,
+        });
+      }
+      cd.addArray(vtkArr);
+    });
+
+    pd.modified();
+    cd.modified();
+    capPolyData.modified();
+    hasCapSlice = true;
+  }
+
+  // =============================================================================
+  // Picker
+  // =============================================================================
+
+  const picker = vtkCellPicker.newInstance();
+  picker.setPickFromList(true);
+  picker.setTolerance(0.0005);
+
+  function syncPickList() {
+    picker.initializePickList();
+    if (actor.getVisibility()) picker.addPickList(actor);
+    if (clipActor.getVisibility()) picker.addPickList(clipActor);
+    if (capActor.getVisibility()) picker.addPickList(capActor);
+  }
+  syncPickList();
+
+  // =============================================================================
+  // Load initial data
+  // =============================================================================
+
   updateGeometry(model.geometry);
   updateScalars(model.geometry);
   renderUpdate(true);
 
-  // Initialize the widget with current geometry (after data is loaded)
   initializeWidget();
-
   refreshMainEdges();
   refreshClipEdges();
 
@@ -1170,177 +751,44 @@ export function render({ model, el }) {
     set2DMode(true);
   }
 
-  // ----------------------------------------------------------------------------
-  // Hover picking + hover cell highlight
-  // ----------------------------------------------------------------------------
+  // =============================================================================
+  // Hover state
+  // =============================================================================
+
   let hoverEnabled = !!model.info;
-  let lastHover = { cellId: -2, cellValue: null, position: [NaN, NaN, NaN], dataset: null };
+  let lastHover = { cellId: -2, cellValue: null, position: [NaN, NaN, NaN], dataset: null, highlight: null };
 
-  // --- Cell highlight state -----------------------------------------------
-  // We darken the *actual* rgb cell-color tuple of whichever cell is under
-  // the cursor, directly in whatever dataset it belongs to (the main
-  // polyData, the clipper's output, or the cap slice) and restore the
-  // original tuple when the hover moves off. This is cheap (touches a
-  // single tuple) and works correctly no matter which of the three actors
-  // was actually picked.
-  const HOVER_DARKEN_OFFSET = 20 / 255;
-  let highlight = null; // { array, cellId, original, dataset }
-
-  function darkenTuple(tuple) {
-    const out = new Array(tuple.length);
-    for (let i = 0; i < tuple.length; i++) {
-      // Leave an alpha component (4th channel), if present, untouched.
-      out[i] = (tuple.length === 4 && i === 3)
-        ? tuple[i]
-        : Math.max(0, Math.min(1, tuple[i] - HOVER_DARKEN_OFFSET));
-    }
-    return out;
-  }
-
-function clearHighlight() {
-  if (!highlight) return;
-  const { array, dataset, indices, originals } = highlight;
-  indices.forEach((i, idx) => array.setTuple(i, originals[idx]));
-  array.modified();
-  dataset.modified();
-  highlight = null;
-}
-// groupKey uniquely identifies "this cell_id, in this dataset" so that
-// moving the mouse between two triangles that share the same cell_id
-// doesn't flicker the highlight off and back on.
-function computeGroupKey(dataset, cellId, cellValue) {
-  if (!dataset) return null;
-  const cellIdArray = dataset.getCellData().getArrayByName('cell_id');
-  return cellIdArray ? `v:${cellValue}` : `c:${cellId}`;
-}
-
-function applyHighlight(dataset, cellId, cellValue, groupKey) {
-  if (!dataset || cellId < 0) return;
-  const cd = dataset.getCellData();
-  const array = cd.getArrayByName('rgb');
-  if (!array || cellId >= array.getNumberOfTuples()) return;
-
-  const cellIdArray = cd.getArrayByName('cell_id');
-  let indices;
-  if (cellIdArray) {
-    // Darken every cell sharing this cell_id value.
-    indices = [];
-    const n = cellIdArray.getNumberOfTuples();
-    for (let i = 0; i < n; i++) {
-      if (cellIdArray.getValue(i) === cellValue) indices.push(i);
-    }
-  } else {
-    // No cell_id grouping available - fall back to single-cell behavior.
-    indices = [cellId];
-  }
-
-  const originals = indices.map((i) => Array.from(array.getTuple(i)));
-  highlight = { array, dataset, groupKey, indices, originals };
-  indices.forEach((i, idx) => array.setTuple(i, darkenTuple(originals[idx])));
-  array.modified();
-  dataset.modified();
-}
-  function updateHover(cellId, cellValue, world, dataset = null) {
-  let x = world?.[0] ?? NaN;
-  let y = world?.[1] ?? NaN;
-  let z = world?.[2] ?? NaN;
-
-  // In 2D mode, transform the picked world position into the custom
-  // coordinate system defined by hover_origin + hover_u_vector + hover_v_vector.
-  // Formula: result = x*u + y*v + w*w  where w = hover_origin
-  if (is2DMode && !isNaN(x) && !isNaN(y)) {
-    const u0 = model.hover_u_vector?.[0] ?? 1.0;
-    const u1 = model.hover_u_vector?.[1] ?? 0.0;
-    const u2 = model.hover_u_vector?.[2] ?? 0.0;
-
-    const v0 = model.hover_v_vector?.[0] ?? 0.0;
-    const v1 = model.hover_v_vector?.[1] ?? 1.0;
-    const v2 = model.hover_v_vector?.[2] ?? 0.0;
-
-    const o0 = model.hover_origin?.[0] ?? 0.0;
-    const o1 = model.hover_origin?.[1] ?? 0.0;
-    const o2 = model.hover_origin?.[2] ?? 0.0;
-
-    const w0 = u1 * v2 - u2 * v1;
-    const w1 = u2 * v0 - u0 * v2;
-    const w2 = u0 * v1 - u1 * v0;
-
-    const w_val = o0 * w0 + o1 * w1 + o2 * w2;
-    // Use original x,y for all components (avoid cascading mutation)
-    const ox = x, oy = y;
-    x = ox * u0 + oy * v0 + w_val * w0;
-    y = ox * u1 + oy * v1 + w_val * w1;
-    z = ox * u2 + oy * v2 + w_val * w2;
-  }
-
-  if (
-    lastHover.cellId === cellId &&
-    lastHover.cellValue === cellValue &&
-    lastHover.dataset === dataset &&
-    lastHover.position[0] === x &&
-    lastHover.position[1] === y &&
-    lastHover.position[2] === z
-  ) {
-    return [x, y, z];
-  }
-
-  const groupKey = computeGroupKey(dataset, cellId, cellValue);
-
-  // Swap the darken-highlight to the newly hovered cell_id group (if any).
-  if (highlight && (highlight.dataset !== dataset || highlight.groupKey !== groupKey)) {
-    clearHighlight();
-  }
-  if (dataset && cellId >= 0 && !highlight) {
-    applyHighlight(dataset, cellId, cellValue, groupKey);
-  }
-
-  lastHover = { cellId, cellValue, position: [x, y, z], dataset };
-  model.hover_cell_id = cellId;
-  model.hover_cell_value = cellValue ?? -1;
-  model.hover_position = [x, y, z];
-
-  return [x, y, z];
-}
+  // =============================================================================
+  // Mouse interaction
+  // =============================================================================
 
   function onMouseMove(e) {
     if (!hoverEnabled) return;
     const rect = el.getBoundingClientRect();
-
-    // CSS-pixel offset within the container - used only for tooltip DOM
-    // placement, which must stay in CSS pixels.
     const cssX = e.clientX - rect.left;
     const cssY = e.clientY - rect.top;
 
-    // ------------------------------------------------------------------
-    // Coordinate fix: the OpenGL render window's actual framebuffer can
-    // be a different pixel size than el's CSS bounding rect (e.g. on any
-    // display with devicePixelRatio != 1). Picking must happen in the
-    // framebuffer's own pixel space, so we scale CSS coords by the ratio
-    // between the real canvas size and its CSS size, rather than assuming
-    // a 1:1 mapping. This is what was causing the growing offset between
-    // the cursor and the picked point.
-    // ------------------------------------------------------------------
     const [canvasWidth, canvasHeight] = openGLRenderWindow.getSize();
     const scaleX = canvasWidth / rect.width;
     const scaleY = canvasHeight / rect.height;
 
     const pickX = cssX * scaleX;
-    const pickY = canvasHeight - cssY * scaleY; // vtk's Y axis is bottom-up
+    const pickY = canvasHeight - cssY * scaleY;
 
     picker.pick([pickX, pickY, 0], renderer);
     const pickedCellId = picker.getCellId();
 
     if (pickedCellId < 0) {
       tooltip.style.display = 'none';
-      updateHover(-1, -1, null, null);
+      updateHover(-1, -1, null, null, model, is2DMode, lastHover);
+      if (lastHover.highlight) {
+        lastHover.highlight = clearHighlight(lastHover.highlight);
+      }
       return;
     }
 
     let world = picker.getPickPosition();
 
-    // Use the dataset that was actually picked (polyData / clipper output /
-    // capPolyData) rather than always reading from the original polyData -
-    // clipActor and capActor have their own cell indexing.
     const dataset =
       (picker.getDataSet && picker.getDataSet()) ||
       (picker.getMapper() && picker.getMapper().getInputData()) ||
@@ -1351,12 +799,10 @@ function applyHighlight(dataset, cellId, cellValue, groupKey) {
     const rgbaArray = cellData.getArrayByName('rgba');
     const cellValueArray = cellData.getArrayByName('cell_value');
 
+    const cellId = cellIdArray ? getArrayValue(cellIdArray, pickedCellId) : 'N/A';
+    const cellValue = cellValueArray ? getArrayValue(cellValueArray, pickedCellId) : 'N/A';
 
-    const cellId = cellIdArray ? cellIdArray.getValue(pickedCellId) : 'N/A';
-    const cellValue = cellValueArray ? cellValueArray.getValue(pickedCellId) : 'N/A';
-    const rgba = rgbaArray ? rgbaArray.getTuple(pickedCellId) : null;
-
-    world = updateHover(pickedCellId, cellId, world, dataset);
+    world = updateHover(pickedCellId, cellId, world, dataset, model, is2DMode, lastHover);
     renderWindow.render();
 
     tooltip.innerHTML = `
@@ -1372,7 +818,10 @@ function applyHighlight(dataset, cellId, cellValue, groupKey) {
 
   function onMouseLeave() {
     tooltip.style.display = 'none';
-    updateHover(-1, -1, null, null);
+    updateHover(-1, -1, null, null, model, is2DMode, lastHover);
+    if (lastHover.highlight) {
+      lastHover.highlight = clearHighlight(lastHover.highlight);
+    }
     renderWindow.render();
   }
 
@@ -1380,8 +829,10 @@ function applyHighlight(dataset, cellId, cellValue, groupKey) {
     hoverEnabled = enable;
     tooltip.style.display = 'none';
     if (!enable) {
-      clearHighlight();
-      lastHover = { cellId: -2, cellValue: null, position: [NaN, NaN, NaN], dataset: null };
+      if (lastHover.highlight) {
+        lastHover.highlight = clearHighlight(lastHover.highlight);
+      }
+      lastHover = { cellId: -2, cellValue: null, position: [NaN, NaN, NaN], dataset: null, highlight: null };
       renderWindow.render();
     }
   }
@@ -1389,7 +840,10 @@ function applyHighlight(dataset, cellId, cellValue, groupKey) {
   el.addEventListener('mousemove', onMouseMove);
   el.addEventListener('mouseleave', onMouseLeave);
 
-  // Expose clip plane utilities globally for this instance
+  // =============================================================================
+  // Expose global API
+  // =============================================================================
+
   window.vtkPanelClipPlane = {
     update: updateClipPlane,
     setEnabled: setClipEnabled,
@@ -1417,16 +871,15 @@ function applyHighlight(dataset, cellId, cellValue, groupKey) {
     }),
   };
 
-  // Wrap set2DMode to sync after changes
   const originalSet2DMode = set2DMode;
   set2DMode = (enabled) => {
     originalSet2DMode(enabled);
     model.view_2d_mode = enabled;
   };
 
-  // ----------------------------------------------------------------------------
-  // Sync clip plane state to Python model
-  // ----------------------------------------------------------------------------
+  // =============================================================================
+  // Sync to model
+  // =============================================================================
 
   function syncClipStateToModel() {
     model.clip_enabled = clipEnabled;
@@ -1434,26 +887,24 @@ function applyHighlight(dataset, cellId, cellValue, groupKey) {
     model.clip_normal = [...clipNormal];
   }
 
-  // Wrap updateClipPlane to sync after changes
   const originalUpdateClipPlane = updateClipPlane;
   updateClipPlane = (origin, normal) => {
     originalUpdateClipPlane(origin, normal);
     syncClipStateToModel();
   };
 
-  // Wrap setClipEnabled to sync after changes
   const originalSetClipEnabled = setClipEnabled;
   setClipEnabled = (enabled) => {
     originalSetClipEnabled(enabled);
     syncClipStateToModel();
   };
 
-  // ----------------------------------------------------------------------------
-  // Keyboard Interaction for Clip Plane
-  // ----------------------------------------------------------------------------
+  // =============================================================================
+  // Keyboard interaction
+  // =============================================================================
 
-  const CLIP_OFFSET_FINE = 0.1;  // Fine movement with Shift
-  const CLIP_OFFSET_COARSE = 1.0; // Normal movement
+  const CLIP_OFFSET_FINE = 0.1;
+  const CLIP_OFFSET_COARSE = 1.0;
 
   function onKeyDown(e) {
     let handled = false;
@@ -1461,7 +912,6 @@ function applyHighlight(dataset, cellId, cellValue, groupKey) {
 
     switch (e.key.toLowerCase()) {
       case 'c':
-        // Toggle clip plane on/off
         setClipEnabled(!clipEnabled);
         handled = true;
         break;
@@ -1478,14 +928,9 @@ function applyHighlight(dataset, cellId, cellValue, groupKey) {
         handled = true;
         break;
       case 'f':
-        updateClipPlane(null, [
-          -clipNormal[0],
-          -clipNormal[1],
-          -clipNormal[2],
-        ]);
+        updateClipPlane(null, [-clipNormal[0], -clipNormal[1], -clipNormal[2]]);
         handled = true;
         break;
-
       case 'v':
         setPlaneWidgetVisible(!planeEnabled);
         handled = true;
@@ -1518,54 +963,39 @@ function applyHighlight(dataset, cellId, cellValue, groupKey) {
   const DRAG_THRESHOLD = 5;
 
   function onMouseDown(e) {
-    mouseDown = {
-      x: e.clientX,
-      y: e.clientY,
-    };
+    mouseDown = { x: e.clientX, y: e.clientY };
   }
 
   function onMouseUp(e) {
     if (!mouseDown) return;
-
     const dx = e.clientX - mouseDown.x;
     const dy = e.clientY - mouseDown.y;
-
     if (Math.hypot(dx, dy) < DRAG_THRESHOLD) {
       model.clicks = (model.clicks || 0) + 1;
     }
-
     mouseDown = null;
   }
 
   el.addEventListener('mousedown', onMouseDown);
   el.addEventListener('mouseup', onMouseUp);
-  // ----------------------------------------------------------------------------
-  // Watch model updates
-  // ----------------------------------------------------------------------------
+
+  // =============================================================================
+  // Model watchers
+  // =============================================================================
+
   const onInfoChange = () => {
     const next = !!model.info;
     if (next !== hoverEnabled) enableHover(next);
   };
 
-  // Listen for clip plane changes from Python
-  model.on("change:clip_enabled", () => {
-    setClipEnabled(model.clip_enabled);
-  });
+  model.on("change:clip_enabled", () => { setClipEnabled(model.clip_enabled); });
+  model.on("change:clip_origin", () => { updateClipPlane(model.clip_origin, null); });
+  model.on("change:clip_normal", () => { updateClipPlane(null, model.clip_normal); });
 
-  model.on("change:clip_origin", () => {
-    updateClipPlane(model.clip_origin, null);
-  });
-
-  model.on("change:clip_normal", () => {
-    updateClipPlane(null, model.clip_normal);
-  });
-
-  // The data-accurate cap slice computed by python (plane ∩ real mesh).
-  // Once it lands, show it (if clipping is currently enabled).
   model.on("change:clip_slice", () => {
-    // The old cap dataset (and any highlight referencing it) is about to
-    // be replaced - drop the stale reference.
-    if (highlight && highlight.dataset === capPolyData) clearHighlight();
+    if (lastHover.highlight && lastHover.highlight.dataset === capPolyData) {
+      lastHover.highlight = clearHighlight(lastHover.highlight);
+    }
     updateCapSlice(model.clip_slice);
     refreshCapEdges();
     updateCapVisibility();
@@ -1573,83 +1003,50 @@ function applyHighlight(dataset, cellId, cellValue, groupKey) {
   });
 
   model.on("change:geometry", () => {
-    // The whole pipeline's datasets get rebuilt - any in-progress highlight
-    // is now stale.
-    console.log("polys bytes:", model.geometry?.polys?.buffer?.byteLength);
-    clearHighlight();
-    lastHover = { cellId: -2, cellValue: null, position: [NaN, NaN, NaN], dataset: null };
+    if (lastHover.highlight) {
+      lastHover.highlight = clearHighlight(lastHover.highlight);
+    }
+    lastHover = { cellId: -2, cellValue: null, position: [NaN, NaN, NaN], dataset: null, highlight: null };
 
     updateGeometry(model.geometry);
     updateScalars(model.geometry);
 
-    // New geometry invalidates whatever cap slice we had.
     hasCapSlice = false;
     updateCapVisibility();
-    // Re-auto-clip on geometry change
     autoClipPlane();
     syncClipStateToModel();
-    // Re-initialize wzdget bounds when geometry changes
     initializeWidget();
     syncWidgetFromPlane();
     refreshMainEdges();
     refreshClipEdges();
-    // Re-render to show updated edges (especially important in 2D mode)
     renderUpdate(false);
   });
 
   model.on?.('change:info', onInfoChange);
 
-  model.on("change:plane_visible", () => {
-    setPlaneWidgetVisible(model.plane_visible);
-    renderUpdate(false);
-  });
+  model.on("change:plane_visible", () => { setPlaneWidgetVisible(model.plane_visible); renderUpdate(false); });
+  model.on("change:edges_visible", () => { setEdgesVisible(model.edges_visible); renderUpdate(false); });
+  model.on("change:colorbar_visible", () => { setColorbarVisible(model.colorbar_visible); renderUpdate(false); });
+  model.on("change:colorbar_scale", () => { setColorbarScale(model.colorbar_scale); renderUpdate(false); });
+  model.on("change:colorbar_min", () => { setColorbarRange(model.colorbar_min, colorbarMax); renderUpdate(false); });
+  model.on("change:colorbar_max", () => { setColorbarRange(colorbarMin, model.colorbar_max); renderUpdate(false); });
+  model.on("change:colorbar_colors", () => { setColorbarColors(model.colorbar_colors); renderUpdate(false); });
+  model.on("change:view_2d_mode", () => { set2DMode(model.view_2d_mode); });
 
-  model.on("change:edges_visible", () => {
-    setEdgesVisible(model.edges_visible);
-    renderUpdate(false);
-  });
-
-  model.on("change:colorbar_visible", () => {
-    setColorbarVisible(model.colorbar_visible);
-    renderUpdate(false);
-  });
-
-  model.on("change:colorbar_scale", () => {
-    setColorbarScale(model.colorbar_scale);
-    renderUpdate(false);
-  });
-
-  model.on("change:colorbar_min", () => {
-    setColorbarRange(model.colorbar_min, colorbarMax);
-    renderUpdate(false);
-  });
-
-  model.on("change:colorbar_max", () => {
-    setColorbarRange(colorbarMin, model.colorbar_max);
-    renderUpdate(false);
-  });
-
-  model.on("change:colorbar_colors", () => {
-    setColorbarColors(model.colorbar_colors);
-    renderUpdate(false);
-  });
-
-  model.on("change:view_2d_mode", () => {
-    set2DMode(model.view_2d_mode);
-  });
-
-  // ----------------------------------------------------------------------------
+  // =============================================================================
   // Resize handling
-  // ----------------------------------------------------------------------------
+  // =============================================================================
+
   const resizeObserver = new ResizeObserver(() => {
     genericRenderWindow.resize();
     renderWindow.render();
   });
   resizeObserver.observe(el);
 
-  // ----------------------------------------------------------------------------
+  // =============================================================================
   // Cleanup
-  // ----------------------------------------------------------------------------
+  // =============================================================================
+
   return () => {
     resizeObserver.disconnect();
     el.removeEventListener('mousemove', onMouseMove);

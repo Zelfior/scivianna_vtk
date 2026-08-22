@@ -1,19 +1,34 @@
+"""
+Main example launcher for scivianna_vtk.
+
+This module provides a unified interface to run different geometry examples.
+For individual examples, see the `examples` subpackage.
+
+Usage
+-----
+To run the full example with all geometry types:
+    python -m scivianna_vtk.example
+
+To run individual examples:
+    python -m scivianna_vtk.examples.example_sliced_sphere
+    python -m scivianna_vtk.examples.example_string_data
+"""
+
 import param
 import numpy as np
 import panel_material_ui as pmui
-from scivianna_vtk.plotter import VTKPlotter, polydata_to_dict
-import matplotlib.pyplot as plt  # For colormaps
+import matplotlib.pyplot as plt
 import pyvista as pv
+from scivianna_vtk.plotter import VTKPlotter
+
 
 # =============================================================================
-# Geometry creation
+# Geometry creation functions
 # =============================================================================
+
 def set_color(polydata: pv.DataSet, cmap: str = "viridis"):
     """
     Set color for the given pyvista mesh using the specified colormap.
-
-    If the 'rgb' array already exists in cell data, it is replaced;
-    otherwise, it is added as a new array.
 
     Parameters
     ----------
@@ -21,74 +36,41 @@ def set_color(polydata: pv.DataSet, cmap: str = "viridis"):
         PyVista dataset (PolyData, UnstructuredGrid, etc.).
     cmap : str, optional
         Colormap name used to map cell values to RGB colors. Default is "viridis".
-
-    Notes
-    -----
-    If 'cell_value' is not present in cell_data, it is auto-generated
-    as a sequential integer array based on cell index.
     """
-    # Get the cell_values array
     if "cell_value" not in polydata.cell_data:
-        # Create a default cell_value if not present
         n_cells = polydata.n_cells
         polydata.cell_data["cell_value"] = np.arange(n_cells, dtype=np.float32)
 
     cell_value = polydata["cell_value"]
-
-    # Normalize cell_value to [0, 1]
     norm_values = (cell_value - cell_value.min()) / (cell_value.max() - cell_value.min())
-
-    # Map normalized values to RGB using the colormap
     cmap_obj = plt.get_cmap(cmap)
-    rgb = cmap_obj(norm_values)[:, :3]  # Get RGB (ignore alpha)
-
-    # Assign the RGB array to cell data
+    rgb = cmap_obj(norm_values)[:, :3]
     polydata["rgb"] = rgb
 
 
-def create_uniform_structured_grid(nx: int, ny: int, nz: int, spacing: float = 1.0, cmap: str = "viridis"):
-    """
-    Create a uniform structured grid using pyvista.
+def create_sliced_sphere(theta_count: int, phi_count: int, cmap: str = "viridis") -> pv.PolyData:
+    """Create a sliced sphere geometry."""
+    sphere = pv.Sphere(theta_resolution=theta_count, phi_resolution=phi_count)
+    num_cells = sphere.n_cells
+    cell_id = np.arange(num_cells, dtype=np.int32)
+    cell_value = cell_id.astype(np.float32)
+    sphere.cell_data["cell_id"] = cell_id
+    sphere.cell_data["cell_value"] = cell_value
+    set_color(sphere, cmap=cmap)
+    return sphere
 
-    Generates a 3D structured grid with evenly spaced points and computes
-    cell values based on normalized x-coordinates. The grid is colored
-    using the specified colormap.
 
-    Parameters
-    ----------
-    nx : int
-        Number of points in the x-dimension.
-    ny : int
-        Number of points in the y-dimension.
-    nz : int
-        Number of points in the z-dimension.
-    spacing : float, optional
-        Total spacing/size of the grid. Default is 1.0.
-    cmap : str, optional
-        Colormap name for coloring cells. Default is "viridis".
-
-    Returns
-    -------
-    pv.StructuredGrid
-        A structured grid with cell_data containing 'cell_id', 'cell_value',
-        and 'rgb' arrays.
-    """
-    # Create coordinate arrays matching the original vtk behavior
+def create_uniform_structured_grid(nx: int, ny: int, nz: int, spacing: float = 1.0, cmap: str = "viridis") -> pv.StructuredGrid:
+    """Create a uniform structured grid."""
     x = np.arange(nx, dtype=np.float32) * spacing / nx
     y = np.arange(ny, dtype=np.float32) * spacing / ny
     z = np.arange(nz, dtype=np.float32) * spacing / nz
-
-    # Create meshgrid for the structured grid (structured grid expects this format)
     X, Y, Z = np.meshgrid(x, y, z, indexing='ij')
-
-    # Create structured grid directly from coordinate arrays
     grid = pv.StructuredGrid(X, Y, Z)
 
-    # Calculate cell values matching original vtk behavior
     n_cells = (nx - 1) * (ny - 1) * (nz - 1)
     cell_id = np.arange(n_cells, dtype=np.float32)
 
-    # Handle edge cases for normalization (avoid division by zero)
     x_norm = np.arange(max(nx - 1, 1), dtype=np.float32)
     y_norm = np.arange(max(ny - 1, 1), dtype=np.float32)
     z_norm = np.arange(max(nz - 1, 1), dtype=np.float32)
@@ -103,245 +85,98 @@ def create_uniform_structured_grid(nx: int, ny: int, nz: int, spacing: float = 1
     X_c, Y_c, Z_c = np.meshgrid(x_norm, y_norm, z_norm, indexing='ij')
     cell_value = X_c.flatten()
 
-    # Ensure cell data arrays match the number of cells
     if len(cell_value) != n_cells:
-        # Trim or pad to match
         cell_value = cell_value[:n_cells]
         if len(cell_value) < n_cells:
             cell_value = np.pad(cell_value, (0, n_cells - len(cell_value)))
 
     grid.cell_data["cell_id"] = cell_id
     grid.cell_data["cell_value"] = cell_value
-
-    # Convert to PolyData for visualization using extract_surface to get proper polygons
-    # This preserves cell data through vtkOriginalCellIds
-    # poly = grid.extract_surface(algorithm='dataset_surface')
     set_color(grid, cmap=cmap)
-
     return grid
 
 
-def create_sliced_sphere(theta_count: int, phi_count: int, cmap: str = "viridis") -> pv.PolyData:
-    """
-    Create a sliced sphere geometry using pyvista.
-
-    Generates a sphere with the specified theta and phi resolutions,
-    adds cell data (cell_id and cell_value), and applies coloring
-    based on the selected colormap.
-
-    Parameters
-    ----------
-    theta_count : int
-        Number of divisions around the polar axis (theta resolution).
-    phi_count : int
-        Number of divisions around the z-axis (phi resolution).
-    cmap : str, optional
-        Colormap name for coloring cells. Default is "viridis".
-
-    Returns
-    -------
-    pv.PolyData
-        A sphere PolyData with cell_data containing 'cell_id', 'cell_value',
-        and 'rgb' arrays.
-    """
-    # Create sphere using pyvista
-    sphere = pv.Sphere(theta_resolution=theta_count, phi_resolution=phi_count)
-
-    num_cells = sphere.n_cells
-    cell_id = np.arange(num_cells, dtype=np.int32)
-    cell_value = cell_id.astype(np.float32)
-
-    # Add cell data
-    sphere.cell_data["cell_id"] = cell_id
-    sphere.cell_data["cell_value"] = cell_value
-
-    # Use the selected colormap to map scalar values to RGB
-    cmap_obj = plt.get_cmap(cmap)
-    norm_values = (cell_value - cell_value.min()) / (cell_value.max() - cell_value.min())
-    rgb = cmap_obj(norm_values)[:, :3]  # Get RGB (ignore alpha)
-
-    # Create and assign RGB array
-    set_color(sphere, cmap=cmap)
-
-    return sphere
-
-
-def create_unstructured_grid(n_points: int = 100, n_cells: int = 50, cmap: str = "viridis") -> pv.UnstructuredGrid:
-    """
-    Create an unstructured grid with random tetrahedral cells using pyvista.
-
-    Generates random points in a unit cube and creates tetrahedral cells
-    by randomly selecting 4 points per cell. Uses a fixed random seed
-    (42) for reproducibility.
-
-    Parameters
-    ----------
-    n_points : int, optional
-        Number of random points to generate. Default is 100.
-    n_cells : int, optional
-        Number of tetrahedral cells to create. Default is 50.
-    cmap : str, optional
-        Colormap name for coloring cells. Default is "viridis".
-
-    Returns
-    -------
-    pv.UnstructuredGrid
-        An unstructured grid with cell_data containing 'cell_id', 'cell_value',
-        and 'rgb' arrays.
-    """
-    # Generate random points in a unit cube
-    np.random.seed(42)  # For reproducibility
-    points = np.random.rand(n_points, 3)
-
-    # Create tetrahedral cells by randomly selecting 4 points for each cell
-    # Make sure we don't select the same point twice in a cell
-    cells = []
-    cell_types = []
-
-    for i in range(n_cells):
-        # Select 4 unique random point indices
-        cell_indices = np.random.choice(n_points, size=4, replace=False)
-        cells.append(cell_indices)
-        cell_types.append(pv.CellType.TETRA)
-
-    # Create the unstructured grid
-    ugrid = pv.UnstructuredGrid(cells, cell_types, points)
-
-    # Add cell data
-    cell_id = np.arange(n_cells, dtype=np.int32)
-    cell_value = cell_id.astype(np.float32)
-
-    ugrid.cell_data["cell_id"] = cell_id
-    ugrid.cell_data["cell_value"] = cell_value
-
-    # Apply colormap
-    set_color(ugrid, cmap=cmap)
-
-    return ugrid
-
-
 def create_random_tetrahedral_mesh(n_tetras: int = 20, seed: int = 42, cmap: str = "viridis") -> pv.UnstructuredGrid:
-    """
-    Create a random tetrahedral mesh spread in space.
-
-    Generates a mesh starting from 8 base points (cube corners) divided
-    into tetrahedra, then adds additional random tetrahedra if needed.
-    Uses the specified random seed for reproducibility.
-
-    Parameters
-    ----------
-    n_tetras : int, optional
-        Number of tetrahedra to create. Default is 20.
-    seed : int, optional
-        Random seed for reproducibility. Default is 42.
-    cmap : str, optional
-        Colormap name for coloring cells. Default is "viridis".
-
-    Returns
-    -------
-    pv.UnstructuredGrid
-        An unstructured grid with cell_data containing 'cell_id', 'cell_value',
-        and 'rgb' arrays.
-    """
+    """Create a random tetrahedral mesh."""
     np.random.seed(seed)
-
-    # Create points by generating random tetrahedra
-    # Each tetra needs 4 points, but we'll share some points between adjacent tetras
     all_points = []
-    cell_connectivity = []  # Flat connectivity array
+    cell_connectivity = []
 
-    # Start with a base set of points (8 corners of a cube)
-    base_points = np.random.rand(8, 3) * 2 - 1  # Points in [-1, 1] cube
+    base_points = np.random.rand(8, 3) * 2 - 1
     all_points.extend(base_points.tolist())
 
-    # Create initial tetrahedra from the base points
-    # A cube can be divided into 5-6 tetrahedra
     tetra_configs = [
         [0, 1, 3, 4], [1, 2, 3, 4], [1, 3, 7, 4], [3, 5, 7, 4], [3, 6, 7, 5], [1, 3, 5, 7]
     ]
 
     for config in tetra_configs[:min(n_tetras, len(tetra_configs))]:
-        # PyVista expects: [n_points, p0, p1, p2, p3] for each cell
         cell_connectivity.extend([4] + list(config))
 
-    # Add more random tetrahedra if needed
     current_n_tetras = len(tetra_configs[:min(n_tetras, len(tetra_configs))])
     while current_n_tetras < n_tetras:
-        # Create new points for additional tetrahedra
-        offset = np.random.rand(3) * 4 - 2  # Random offset in [-2, 2]
+        offset = np.random.rand(3) * 4 - 2
         new_points = np.random.rand(4, 3) + offset
-
         start_idx = len(all_points)
         all_points.extend(new_points.tolist())
-
-        # Add cell with format: [4, p0, p1, p2, p3]
         cell_connectivity.extend([4, start_idx, start_idx + 1, start_idx + 2, start_idx + 3])
         current_n_tetras += 1
 
-    # Create the unstructured grid using pyvista's helper
     points_array = np.array(all_points, dtype=np.float64)
-
-    # Create cell types array (one TETRA per cell)
-    n_cells = len(cell_connectivity) // 5  # Each cell has 5 values: [4, p0, p1, p2, p3]
+    n_cells = len(cell_connectivity) // 5
     cell_types = np.full(n_cells, pv.CellType.TETRA, dtype=np.uint8)
-
-    # Create the unstructured grid
     ugrid = pv.UnstructuredGrid(np.array(cell_connectivity, dtype=np.int64), cell_types, points_array)
 
-    # Add cell data
     cell_id = np.arange(n_cells, dtype=np.int32)
     cell_value = cell_id.astype(np.float32)
-
     ugrid.cell_data["cell_id"] = cell_id
     ugrid.cell_data["cell_value"] = cell_value
-
-    # Apply colormap
     set_color(ugrid, cmap=cmap)
-
     return ugrid
 
+
+def create_sphere_with_string_data(theta_count: int = 20, phi_count: int = 20) -> pv.PolyData:
+    """
+    Create a sphere with string cell IDs and string cell values.
+
+    This demonstrates the ability to use string data for cell identification
+    and values, which is useful for categorical data or named regions.
+    """
+    sphere = pv.Sphere(theta_resolution=theta_count, phi_resolution=phi_count)
+    num_cells = sphere.n_cells
+
+    cell_id_strings = [f"cell_{i}" for i in range(num_cells)]
+
+    zone_labels = ["zone_A", "zone_B", "zone_C"]
+    cell_value_strings = [zone_labels[i % len(zone_labels)] for i in range(num_cells)]
+
+    sphere.cell_data["cell_id"] = cell_id_strings
+    sphere.cell_data["cell_value"] = cell_value_strings
+
+    zone_colors = {
+        "zone_A": [47 / 255, 84 / 255, 101 / 255],  # Red
+        "zone_B": [215 / 255, 200 / 255, 106 / 255],  # Green
+        "zone_C": [99 / 255, 145 / 255, 158 / 255],  # Blue
+    }
+    rgb = np.array([zone_colors[v] for v in cell_value_strings])
+    sphere.cell_data["rgb"] = rgb
+
+    return sphere
+
+
+# =============================================================================
+# Main Example Panel
+# =============================================================================
 
 class ExamplePanel(param.Parameterized):
     """
     Interactive Panel UI for VTK/PyVista visualization with vtk.js.
 
     Provides a configurable interface for creating and visualizing
-    different geometry types (sliced sphere, structured grid, unstructured
-    grid) with colormap selection, clip plane controls, and hover info display.
-
-    Parameters
-    ----------
-    theta_slider : IntSlider
-        Resolution slider for theta dimension (4-80).
-    phi_slider : IntSlider
-        Resolution slider for phi dimension (4-80).
-    cmap_select : Select
-        Colormap selector with options: viridis, plasma, inferno, magma.
-    geom_select : Select
-        Geometry type selector: sliced_sphere, structured_grid, unstructured_grid.
-    display_info : Checkbox
-        Toggle for displaying hover information panel.
-    plane_enabled : Checkbox
-        Enable/disable plane visualization (toggled with V key).
-    clip_enabled : Checkbox
-        Enable/disable clip plane visualization (toggled with C key).
-    clip_axis_select : Select
-        Clip axis selector: x, y, z (toggled with X/Y/Z keys).
-
-    Examples
-    --------
-    >>> panel = ExamplePanel()
-    >>> panel.show()
+    different geometry types with colormap selection, clip plane controls,
+    and hover info display.
     """
 
     def __init__(self, **params):
-        """
-        Initialize the ExamplePanel with default UI components and geometry.
-
-        Creates all UI sliders, selectors, checkboxes, and the VTKPlotter
-        visualization widget. Initializes with a sliced sphere geometry
-        using default resolution values.
-        """
         super().__init__(**params)
 
         self.theta_slider = pmui.IntSlider(
@@ -349,14 +184,14 @@ class ExamplePanel(param.Parameterized):
             start=4,
             end=80,
             sizing_mode="stretch_width",
-            value=10,
+            value=15,
         )
         self.phi_slider = pmui.IntSlider(
             label="Resolution Phi",
             start=4,
             end=80,
             sizing_mode="stretch_width",
-            value=10,
+            value=14,
         )
         self.cmap_select = pmui.Select(
             label="Colormap",
@@ -365,7 +200,7 @@ class ExamplePanel(param.Parameterized):
         )
         self.geom_select = pmui.Select(
             label="Geometry Type",
-            options=["sliced_sphere", "structured_grid", "unstructured_grid"],
+            options=["sliced_sphere", "structured_grid", "unstructured_grid", "string_data_sphere"],
             sizing_mode="stretch_width",
         )
         self.display_info = pmui.Checkbox(
@@ -374,7 +209,6 @@ class ExamplePanel(param.Parameterized):
             sizing_mode="stretch_width",
         )
 
-        # Clip plane controls
         self.plane_enabled = pmui.Checkbox(
             label="Enable Plane (V to toggle)",
             value=False,
@@ -402,7 +236,6 @@ class ExamplePanel(param.Parameterized):
             sizing_mode="stretch_width",
         )
 
-        # Colorbar controls
         self.colorbar_visible = pmui.Checkbox(
             label="Show Colorbar",
             value=False,
@@ -446,21 +279,12 @@ class ExamplePanel(param.Parameterized):
             cmap=self.cmap_select.value,
         )
 
-        self.description = pmui.Typography(
-            """
-            Hover to update...
-            """
-        )
-        self.description_clip = pmui.Typography(
-            """
-            Enable clip to update...
-            """
-        )
+        self.description = pmui.Typography("Hover to update...")
+        self.description_clip = pmui.Typography("Enable clip to update...")
 
         self.vtk_view = VTKPlotter(sizing_mode="stretch_both")
         self.vtk_view.update_polydata(self.poly)
 
-        # Initialize colorbar from current geometry data
         self._update_colorbar_from_data()
 
         self.vtk_view.param.watch(self.update_description, "hover_cell_id")
@@ -470,36 +294,13 @@ class ExamplePanel(param.Parameterized):
         self.vtk_view.param.watch(self.update_description_clip, "clip_origin")
         self.vtk_view.param.watch(self.update_description_clip, "clip_normal")
 
-        # Initialize clip plane from model after first geometry update
         self._init_clip_plane()
-
-        # Initialize clip controls visibility based on 2D mode state
         self._update_clip_controls_visibility()
 
-
     def _init_clip_plane(self):
-        """
-        Initialize clip plane controls after geometry is loaded.
-
-        Sets the initial clip plane position based on the current geometry
-        bounds by calling _update_clip_position().
-        """
-        # Set initial position based on geometry bounds
         self._update_clip_position()
 
     def update_description(self, event=None):
-        """
-        Update the hover description display with current cell information.
-
-        Reads hover_cell_id, hover_cell_value, and hover_position from
-        the VTKPlotter widget and updates the description typography
-        component with formatted values.
-
-        Parameters
-        ----------
-        event : param.parameterized.Event, optional
-            Parameter change event (unused, for watch callback compatibility).
-        """
         self.description.object = f"""
         Hovered Cell ID: {self.vtk_view.hover_cell_id}
         Hovered Cell Value: {self.vtk_view.hover_cell_value}
@@ -512,20 +313,8 @@ class ExamplePanel(param.Parameterized):
         """
 
     def update_description_clip(self, event=None):
-        """
-        Update the clip plane description display with current position info.
-
-        Reads clip_origin and clip_normal from the VTKPlotter widget and
-        updates the description_clip typography component with formatted
-        coordinate values.
-
-        Parameters
-        ----------
-        event : param.parameterized.Event, optional
-            Parameter change event (unused, for watch callback compatibility).
-        """
         self.description_clip.object = f"""
-        Clim origin: {self.vtk_view.hover_cell_id}
+        Clip origin: {self.vtk_view.hover_cell_id}
 
         - X : {self.vtk_view.clip_origin[0]:.3f}
         - Y : {self.vtk_view.clip_origin[1]:.3f}
@@ -539,34 +328,22 @@ class ExamplePanel(param.Parameterized):
         """
 
     def show(self):
-        """
-        Display the ExamplePanel UI.
-
-        Creates a Row layout containing a Column of UI controls (geometry
-        selector, sliders, colormap selector, clip plane controls, info display)
-        alongside the VTKPlotter visualization widget, then launches the app.
-        """
         pmui.Row(
             pmui.Column(
                 self.geom_select,
                 self.theta_slider,
                 self.phi_slider,
                 self.cmap_select,
-
                 self.view_2d_mode,
-
                 self.plane_enabled,
                 self.clip_enabled,
                 self.clip_axis_select,
                 self.description_clip,
-
                 self.edges_visible,
-
                 self.colorbar_visible,
                 self.colorbar_scale,
                 self.colorbar_min,
                 self.colorbar_max,
-
                 self.display_info,
                 self.description,
                 width=300,
@@ -576,18 +353,6 @@ class ExamplePanel(param.Parameterized):
         ).show()
 
     def _update_vtp_data(self, event=None):
-        """
-        Update geometry data when resolution or geometry type changes.
-
-        Creates a new mesh based on the selected geometry type (sliced_sphere,
-        structured_grid, or unstructured_grid) using current slider values for
-        resolution and colormap. Updates both self.poly and the VTKPlotter widget.
-
-        Parameters
-        ----------
-        event : param.parameterized.Event, optional
-            Parameter change event (unused, for watch callback compatibility).
-        """
         print("Updating VTKPlotter data...")
         if self.geom_select.value == "structured_grid":
             mesh = create_uniform_structured_grid(
@@ -603,6 +368,11 @@ class ExamplePanel(param.Parameterized):
                 seed=42,
                 cmap=self.cmap_select.value,
             )
+        elif self.geom_select.value == "string_data_sphere":
+            mesh = create_sphere_with_string_data(
+                theta_count=self.theta_slider.value,
+                phi_count=self.phi_slider.value,
+            )
         else:
             mesh = create_sliced_sphere(
                 theta_count=self.theta_slider.value,
@@ -612,241 +382,95 @@ class ExamplePanel(param.Parameterized):
 
         self.poly = mesh
         self.vtk_view.update_polydata(mesh)
-
-        # Update colorbar colors and range from the new geometry data
         self._update_colorbar_from_data()
 
     def _update_colorbar_from_data(self):
-        """
-        Update colorbar range and colors from current cell data.
-
-        Extracts the min/max of 'cell_value' from the current geometry and
-        updates the VTKPlotter's colorbar_min, colorbar_max, and colorbar_colors
-        parameters to match. Also syncs the UI inputs.
-        """
         if hasattr(self, 'poly') and self.poly is not None:
             if "cell_value" in self.poly.cell_data:
                 cell_value = self.poly["cell_value"]
+                if len(cell_value) or isinstance(cell_value[0], str):
+                    self.vtk_view.colorbar_visible = False
+                    return
+
                 vmin = float(cell_value.min())
                 vmax = float(cell_value.max())
-
-                # Update colorbar range
                 self.vtk_view.colorbar_min = vmin
                 self.vtk_view.colorbar_max = vmax
                 self.colorbar_min.value = vmin
                 self.colorbar_max.value = vmax
 
-            # Update colorbar colors from colormap
             cmap_obj = plt.get_cmap(self.cmap_select.value)
-            # Sample 100 colors from the colormap
             num_colors = 100
             normalized_colors = cmap_obj(np.linspace(0, 1, num_colors))
-            # Convert to RGB lists (drop alpha channel)
             self.vtk_view.colorbar_colors = normalized_colors[:, :3].tolist()
 
     def _update_color(self, event=None):
-        """
-        Update cell colors when colormap selection changes.
-
-        Applies the selected colormap to the current geometry by calling
-        set_color() and updates the VTKPlotter widget with new color data.
-        Also updates the colorbar colors and range from the data.
-
-        Parameters
-        ----------
-        event : param.parameterized.Event, optional
-            Parameter change event (unused, for watch callback compatibility).
-        """
         set_color(self.poly, cmap=self.cmap_select.value)
         self.vtk_view.update_colors(self.poly)
-
-        # Update colorbar colors and range from the updated data
         self._update_colorbar_from_data()
 
     def _update_info_display(self, event=None):
-        """
-        Toggle the VTKPlotter info panel display.
-
-        Syncs the display_info checkbox state with the VTKPlotter's info
-        parameter to show or hide the information overlay.
-
-        Parameters
-        ----------
-        event : param.parameterized.Event, optional
-            Parameter change event (unused, for watch callback compatibility).
-        """
         self.vtk_view.info = self.display_info.value
 
     def _update_clip_enabled(self, event=None):
-        """
-        Enable or disable the clip plane visualization.
-
-        Syncs the clip_enabled checkbox state to the VTKPlotter's clip_enabled
-        parameter.
-
-        Parameters
-        ----------
-        event : param.parameterized.Event, optional
-            Parameter change event (unused, for watch callback compatibility).
-        """
         self.vtk_view.set_clip_enabled(self.clip_enabled.value)
 
     def _update_plane_enabled(self, event=None):
-        """
-        Enable or disable the plane visualization overlay.
-
-        Syncs the plane_enabled checkbox state to the VTKPlotter's plane_visible
-        parameter.
-
-        Parameters
-        ----------
-        event : param.parameterized.Event, optional
-            Parameter change event (unused, for watch callback compatibility).
-        """
         self.vtk_view.set_plane_enabled(self.plane_enabled.value)
 
     def _update_clip_axis(self, event=None):
-        """
-        Update clip plane normal axis when selection changes.
-
-        Sets the clip plane normal to the selected axis (x, y, or z) via
-        set_clip_axis(), then syncs the origin to the center of the geometry bounds.
-
-        Parameters
-        ----------
-        event : param.parameterized.Event, optional
-            Parameter change event (unused, for watch callback compatibility).
-        """
         self.vtk_view.set_clip_axis(self.clip_axis_select.value)
-        # Sync the origin to center after axis change
         self._update_clip_position()
 
     def _update_edges_visible(self, event=None):
-        """
-        Toggle edge display visibility.
-
-        Syncs the edges_visible checkbox state to the VTKPlotter's edges_visible
-        parameter.
-
-        Parameters
-        ----------
-        event : param.parameterized.Event, optional
-            Parameter change event (unused, for watch callback compatibility).
-        """
         self.vtk_view.edges_visible = self.edges_visible.value
 
     def _update_colorbar_visible(self, event=None):
-        """
-        Toggle colorbar display visibility.
-
-        Syncs the colorbar_visible checkbox state to the VTKPlotter's colorbar_visible
-        parameter.
-
-        Parameters
-        ----------
-        event : param.parameterized.Event, optional
-            Parameter change event (unused, for watch callback compatibility).
-        """
         self.vtk_view.colorbar_visible = self.colorbar_visible.value
 
     def _update_colorbar_scale(self, event=None):
-        """
-        Update colorbar scale (linear/log).
-
-        Syncs the colorbar_scale select state to the VTKPlotter's colorbar_scale
-        parameter.
-
-        Parameters
-        ----------
-        event : param.parameterized.Event, optional
-            Parameter change event (unused, for watch callback compatibility).
-        """
         self.vtk_view.colorbar_scale = self.colorbar_scale.value
 
     def _update_colorbar_range(self, event=None):
-        """
-        Update colorbar value range.
-
-        Syncs the colorbar min/max input values to the VTKPlotter's colorbar_min
-        and colorbar_max parameters.
-
-        Parameters
-        ----------
-        event : param.parameterized.Event, optional
-            Parameter change event (unused, for watch callback compatibility).
-        """
         self.vtk_view.set_colorbar_range(
             vmin=self.colorbar_min.value,
             vmax=self.colorbar_max.value
         )
 
     def _update_clip_controls_visibility(self):
-        """
-        Show/hide clip-related controls based on 2D mode state.
-
-        Clip plane features are not meaningful in 2D mode, so we hide
-        the related UI controls when 2D mode is enabled.
-        """
         is_2d = self.view_2d_mode.value
-        # Hide clip controls in 2D mode
         self.plane_enabled.visible = not is_2d
         self.clip_enabled.visible = not is_2d
         self.clip_axis_select.visible = not is_2d
         self.description_clip.visible = not is_2d
 
     def _update_view_2d_mode(self, event=None):
-        """
-        Toggle 2D top-down view mode.
-
-        Syncs the view_2d_mode checkbox state to the VTKPlotter's view_2d_mode
-        parameter. When enabled, the view switches to parallel projection looking
-        down the Z axis (XY plane), and rotation is disabled.
-        Clip plane controls are hidden in 2D mode as they are not meaningful.
-
-        Parameters
-        ----------
-        event : param.parameterized.Event, optional
-            Parameter change event (unused, for watch callback compatibility).
-        """
         self.vtk_view.set_view_2d_mode(self.view_2d_mode.value)
         self._update_clip_controls_visibility()
 
     def _update_clip_position(self, event=None):
-        """
-        Update clip plane origin position based on current geometry bounds.
-
-        Calculates the center position of the current geometry along the
-        selected clip axis and sets the clip plane origin accordingly.
-        Other coordinates are set to the center of their respective bounds.
-
-        Parameters
-        ----------
-        event : param.parameterized.Event, optional
-            Parameter change event (unused, for watch callback compatibility).
-        """
-        # Get geometry bounds to calculate proper origin
         if hasattr(self, 'poly') and self.poly is not None:
             bounds = self.poly.bounds
             axis_idx = {'x': 0, 'y': 1, 'z': 2}.get(self.clip_axis_select.value, 2)
 
-            # Calculate origin based on slider position along the selected axis
             min_val = bounds[axis_idx * 2]
             max_val = bounds[axis_idx * 2 + 1]
             range_val = max_val - min_val
-
-            # Position along the axis
             pos = min_val + range_val / 2
 
-            # Create origin at this position on the selected axis
             origin = [0.0, 0.0, 0.0]
             origin[axis_idx] = pos
 
-            # Set other coordinates to center of their ranges
             for i in range(3):
                 if i != axis_idx:
                     origin[i] = (bounds[i * 2] + bounds[i * 2 + 1]) / 2
 
             self.vtk_view.set_clip_plane(origin=origin)
+
+
+# =============================================================================
+# Main entry point
+# =============================================================================
 
 if __name__ == "__main__":
     ExamplePanel().show()

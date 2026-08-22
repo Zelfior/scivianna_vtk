@@ -64,53 +64,50 @@ def _is_string_array(vtk_array) -> bool:
     from vtk import VTK_STRING
     return vtk_array.GetDataType() == VTK_STRING
 
+def _serialize_string_array(arr) -> dict:
+    values = [
+        arr.GetValue(i)
+        for i in range(arr.GetNumberOfValues())
+    ]
 
-def _extract_string_values(vtk_array) -> dict:
-    """
-    Extract string values from a VTK string array and encode them as
-    null-padded fixed-width UTF-8 bytes.
-
-    Parameters
-    ----------
-    vtk_array : vtkStringArray
-        VTK string array to extract from.
-
-    Returns
-    -------
-    dict
-        Dictionary with keys:
-            - 'buffer': bytes of the null-padded UTF-8 encoded strings
-            - 'numTuples': number of string elements
-            - 'stringLength': fixed byte width per string (including null terminator)
-    """
-    num_tuples = vtk_array.GetNumberOfTuples()
-    if num_tuples == 0:
+    if not values:
         return {
             "buffer": b"",
             "numTuples": 0,
             "stringLength": 0,
+            "components": arr.GetNumberOfComponents(),
+            "dtype": "string",
         }
 
-    # Find the maximum string length to determine fixed width
-    max_len = 0
-    values = []
-    for i in range(num_tuples):
-        val = vtk_array.GetValue(i)
-        encoded = val.encode("utf-8") if val is not None else b""
-        values.append(encoded)
-        if len(encoded) > max_len:
-            max_len = len(encoded)
+    encoded = [value.encode("utf-8") for value in values]
 
-    # Fixed width = max content length + 1 for null terminator
-    string_length = max_len + 1
-    buffer = b""
-    for encoded in values:
-        buffer += encoded.ljust(string_length, b"\x00")
+    # Fixed width in BYTES, not characters.
+    string_length = max(len(value) for value in encoded)
+
+    buffer = b"".join(
+        value.ljust(string_length, b"\x00")
+        for value in encoded
+    )
 
     return {
         "buffer": buffer,
-        "numTuples": num_tuples,
+        "numTuples": arr.GetNumberOfTuples(),
         "stringLength": string_length,
+        "components": arr.GetNumberOfComponents(),
+        "dtype": "string",
+    }
+
+def _serialize_array(arr) -> dict:
+    if _is_string_array(arr):
+        return _serialize_string_array(arr)
+
+    np_arr = _pyvista_to_numpy(arr)
+    components = arr.GetNumberOfComponents()
+
+    return {
+        "buffer": _pack(np_arr, np.float32),
+        "components": components,
+        "dtype": str(np_arr.dtype),
     }
 
 # =============================================================================
@@ -218,27 +215,16 @@ def polydata_to_dict(poly: pv.PolyData) -> dict:
     pd = poly.GetPointData()
 
     for i in range(pd.GetNumberOfArrays()):
+        arr = pd.GetAbstractArray(i)
+        if arr is None:
+            continue
 
-        arr = pd.GetAbstractArray(i) if pd.GetAbstractArray(i) is not None else pd.GetArray(i)
         name = arr.GetName()
+        if name is None:
+            continue
 
-        if _is_string_array(arr):
-            # Handle VTK string arrays separately (vtk_to_numpy doesn't support them)
-            str_info = _extract_string_values(arr)
-            point_data[name] = {
-                "buffer": str_info["buffer"],
-                "numTuples": str_info["numTuples"],
-                "stringLength": str_info["stringLength"],
-                "dtype": "string",
-            }
-        else:
-            np_arr = _pyvista_to_numpy(arr)
+        point_data[name] = _serialize_array(arr)
 
-            point_data[name] = {
-                "buffer": memoryview(np_arr).tobytes(),
-                "components": arr.GetNumberOfComponents(),
-                "dtype": str(np_arr.dtype),
-            }
 
     # -------------------------------------------------------------------------
     # CELL DATA
@@ -248,27 +234,15 @@ def polydata_to_dict(poly: pv.PolyData) -> dict:
     cd = poly.GetCellData()
 
     for i in range(cd.GetNumberOfArrays()):
-        arr = cd.GetAbstractArray(i) if cd.GetAbstractArray(i) is not None else cd.GetArray(i)
+        arr = cd.GetAbstractArray(i)
         if arr is None:
-            raise ValueError("Returned array is None, VTK backend can only be used with integer/float arrays.")
+            continue
+
         name = arr.GetName()
+        if name is None:
+            continue
 
-        if _is_string_array(arr):
-            # Handle VTK string arrays separately (vtk_to_numpy doesn't support them)
-            str_info = _extract_string_values(arr)
-            cell_data[name] = {
-                "buffer": str_info["buffer"],
-                "numTuples": str_info["numTuples"],
-                "stringLength": str_info["stringLength"],
-                "dtype": "string",
-            }
-        else:
-            np_arr = _pyvista_to_numpy(arr)
-
-            cell_data[name] = {
-                "buffer": _pack(np_arr, np.float32),
-                "components": arr.GetNumberOfComponents(),
-            }
+        cell_data[name] = _serialize_array(arr)
 
     return {
         "points": points,
@@ -443,8 +417,8 @@ class VTKPlotter(JSComponent):
 
     info = param.Boolean(default=True, doc="Whether to show the info panel.")
 
-    hover_cell_id = param.Integer(default=-1, doc="ID of the currently hovered cell.")
-    hover_cell_value = param.Number(default=-1, doc="Value of the currently hovered cell.")
+    hover_cell_id = param.Parameter(default=-1, doc="ID of the currently hovered cell.")
+    hover_cell_value = param.Parameter(default=-1, doc="Value of the currently hovered cell.")
 
     hover_position = param.List(
         default=[float("nan"), float("nan"), float("nan")],
